@@ -1,0 +1,220 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum WorkspaceType {
+  PERSONAL
+  SHARED
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  CREATOR
+  VIEWER
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  REMOVED
+}
+
+enum AgentStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ERROR
+  DELETED
+}
+
+enum TriggerType {
+  MANUAL
+  SCHEDULED
+  EVENT
+}
+
+enum ActionPermissionMode {
+  ASK_BEFORE_CHANGES
+  FULL_ACCESS
+}
+
+enum DeliveryPermissionMode {
+  ASK_BEFORE_SENDING
+  SEND_AUTOMATICALLY
+}
+
+enum AgentRunStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum ConnectorStatus {
+  ACTIVE
+  ERROR
+  REVOKED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  PROTECTED
+}
+
+model User {
+  id             String                @id @default(cuid())
+  clerkUserId    String                @unique
+  email          String                @unique
+  name           String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  memberships    WorkspaceMembership[]
+  ownedWorkspaces Workspace[]           @relation("WorkspaceOwner")
+  createdAgents  Agent[]               @relation("AgentCreatedBy")
+  triggeredRuns  AgentRun[]            @relation("AgentRunTriggeredBy")
+  connectedCredentials ConnectorCredential[] @relation("ConnectorCreatedBy")
+  requestedApprovals ApprovalRequest[] @relation("ApprovalRequestedBy")
+  reviewedApprovals  ApprovalRequest[] @relation("ApprovalReviewedBy")
+}
+
+model Workspace {
+  id                   String                @id @default(cuid())
+  clerkOrganizationId  String?               @unique
+  name                 String
+  slug                 String                @unique
+  type                 WorkspaceType
+  ownerId              String
+  branding             Json?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  owner                User                  @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  memberships          WorkspaceMembership[]
+  agents               Agent[]
+  connectorCredentials ConnectorCredential[]
+  approvalRequests     ApprovalRequest[]
+}
+
+model WorkspaceMembership {
+  id          String           @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        MembershipRole
+  status      MembershipStatus @default(ACTIVE)
+  invitedById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Agent {
+  id                     String                 @id @default(cuid())
+  workspaceId            String
+  name                   String
+  description            String?
+  systemPrompt           String
+  tools                  Json
+  triggerType            TriggerType            @default(MANUAL)
+  triggerConfig          Json?
+  status                 AgentStatus            @default(DRAFT)
+  llmProvider            String                 @default("openai")
+  llmModel               String                 @default("gpt-4.1")
+  actionPermissionMode   ActionPermissionMode   @default(ASK_BEFORE_CHANGES)
+  deliveryPermissionMode DeliveryPermissionMode @default(ASK_BEFORE_SENDING)
+  createdById            String
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  workspace              Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy              User                   @relation("AgentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  runs                   AgentRun[]
+  approvalRequests       ApprovalRequest[]
+
+  @@index([workspaceId, status])
+  @@index([createdById])
+}
+
+model AgentRun {
+  id             String         @id @default(cuid())
+  agentId        String
+  triggeredById  String?
+  triggerType    TriggerType
+  status         AgentRunStatus @default(QUEUED)
+  summary        String?
+  output         Json?
+  error          String?
+  durationMs     Int?
+  costEstimate   Decimal?       @db.Decimal(12, 6)
+  deliveryStatus Json?
+  retainedUntil  DateTime
+  triggeredAt    DateTime       @default(now())
+  completedAt    DateTime?
+  agent          Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  triggeredBy    User?          @relation("AgentRunTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  approvalRequests ApprovalRequest[]
+
+  @@index([agentId, triggeredAt])
+  @@index([status])
+  @@index([retainedUntil])
+}
+
+model ConnectorCredential {
+  id                   String          @id @default(cuid())
+  workspaceId          String
+  connectorType        String
+  displayName          String
+  encryptedCredentials String
+  status               ConnectorStatus @default(ACTIVE)
+  createdById          String
+  sharedWithWorkspace  Boolean         @default(true)
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  lastHealthCheckAt    DateTime?
+  workspace            Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy            User            @relation("ConnectorCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([workspaceId, connectorType])
+}
+
+model ApprovalRequest {
+  id              String         @id @default(cuid())
+  workspaceId     String
+  agentId         String
+  agentRunId      String?
+  requestedAction Json
+  riskLevel       RiskLevel
+  status          ApprovalStatus @default(PENDING)
+  requestedById   String?
+  reviewedById    String?
+  createdAt       DateTime       @default(now())
+  reviewedAt      DateTime?
+  expiresAt       DateTime?
+  workspace       Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent           Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentRun        AgentRun?      @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  requestedBy     User?          @relation("ApprovalRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  reviewedBy      User?          @relation("ApprovalReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+  @@index([agentId])
+}

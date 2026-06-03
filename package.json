@@ -3,15 +3,36 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "dev": "node scripts/run-with-system-node.mjs next dev --webpack",
+    "dev:clean": "rm -rf .next && node scripts/run-with-system-node.mjs next dev --webpack",
+    "build": "node scripts/run-with-system-node.mjs next build --webpack",
+    "start": "node scripts/run-with-system-node.mjs next start",
+    "lint": "eslint",
+    "db:generate": "node scripts/run-with-system-node.mjs prisma generate",
+    "db:migrate": "node scripts/run-with-system-node.mjs prisma migrate dev",
+    "db:studio": "node scripts/run-with-system-node.mjs prisma studio",
+    "worker:agent-runs": "node scripts/run-with-system-node.mjs tsx scripts/agent-run-worker.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
+    "@clerk/nextjs": "^7.4.2",
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "6.19.3",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-label": "^2.1.8",
+    "@radix-ui/react-separator": "^1.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
+    "bullmq": "^5.77.6",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.17.0",
     "next": "16.2.6",
+    "openai": "^6.39.1",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "tailwind-merge": "^3.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -20,7 +41,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "prisma": "6.19.3",
     "tailwindcss": "^4",
+    "tsx": "^4.22.3",
     "typescript": "^5"
   }
 }
