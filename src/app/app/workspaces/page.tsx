@@ -191,7 +191,7 @@ export default async function WorkspacesPage({
             </CardTitle>
             <CardDescription>
               {isSharedWorkspace
-                ? "Add a teammate who has already signed into this app once."
+                ? "Add a teammate by email. If they have not signed in yet, the invite will wait for them."
                 : "Personal workspaces cannot be shared. Create a shared workspace for team agents."}
             </CardDescription>
           </CardHeader>
