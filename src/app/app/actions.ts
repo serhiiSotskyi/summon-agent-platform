@@ -17,6 +17,10 @@ import {
   getCurrentUserContext,
 } from "@/lib/app/context";
 import { titleFromPrompt } from "@/lib/app/format";
+import {
+  createOrRefreshWorkspaceInvitation,
+  normalizeInviteEmail,
+} from "@/lib/app/invitations";
 import { createWorkspaceWithOwnerMembership } from "@/lib/app/workspaces";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
@@ -72,7 +76,7 @@ export async function createSharedWorkspace(formData: FormData) {
 
 export async function inviteWorkspaceMember(formData: FormData) {
   const workspaceId = getText(formData, "workspaceId");
-  const email = getText(formData, "email").toLowerCase();
+  const email = normalizeInviteEmail(getText(formData, "email"));
   const role = getText(formData, "role", "CREATOR") as MembershipRole;
   const context = await requireContext(workspaceId);
 
@@ -102,86 +106,116 @@ export async function inviteWorkspaceMember(formData: FormData) {
     },
   });
 
-  if (!invitedUser) {
-    await db.workspaceInvitation.upsert({
-      where: {
-        workspaceId_email: {
-          workspaceId: context.workspace.id,
-          email,
-        },
-      },
-      create: {
-        workspaceId: context.workspace.id,
-        email,
-        role,
-        invitedById: context.user.id,
-        status: "PENDING",
-      },
-      update: {
-        acceptedAt: null,
-        acceptedById: null,
-        invitedById: context.user.id,
-        role,
-        status: "PENDING",
-      },
-    });
-
-    revalidatePath("/app", "layout");
-    redirectToWorkspaces(context.workspace.id, { inviteStatus: "pending" });
-  }
-
-  if (invitedUser.id === context.user.id) {
+  if (invitedUser?.id === context.user.id) {
     redirectToWorkspaces(context.workspace.id, { inviteError: "self" });
   }
 
-  const existingMembership = await db.workspaceMembership.findUnique({
-    where: {
-      workspaceId_userId: {
-        workspaceId: context.workspace.id,
-        userId: invitedUser.id,
-      },
-    },
-  });
+  const existingMembership = invitedUser
+    ? await db.workspaceMembership.findUnique({
+        where: {
+          workspaceId_userId: {
+            workspaceId: context.workspace.id,
+            userId: invitedUser.id,
+          },
+        },
+      })
+    : null;
 
   if (existingMembership?.role === "OWNER") {
     redirectToWorkspaces(context.workspace.id, { inviteError: "owner" });
   }
 
-  await db.workspaceMembership.upsert({
-    where: {
-      workspaceId_userId: {
-        workspaceId: context.workspace.id,
-        userId: invitedUser.id,
+  if (existingMembership?.status === "ACTIVE") {
+    await db.workspaceMembership.update({
+      where: { id: existingMembership.id },
+      data: {
+        invitedById: context.user.id,
+        role,
       },
-    },
-    create: {
+    });
+    revalidatePath("/app", "layout");
+    redirectToWorkspaces(context.workspace.id, { inviteStatus: "updated" });
+  }
+
+  const invitation = await createOrRefreshWorkspaceInvitation({
+    email,
+    invitedBy: context.user,
+    role,
+    workspaceId: context.workspace.id,
+  });
+
+  revalidatePath("/app", "layout");
+  redirectToWorkspaces(
+    context.workspace.id,
+    invitation.deliveryStatus.sent
+      ? { inviteStatus: "sent" }
+      : { inviteLink: invitation.inviteUrl, inviteStatus: "manual" },
+  );
+}
+
+export async function resendWorkspaceInvitation(formData: FormData) {
+  const workspaceId = getText(formData, "workspaceId");
+  const invitationId = getText(formData, "invitationId");
+  const context = await requireContext(workspaceId);
+
+  if (!canManageWorkspace(context.role)) {
+    redirectToWorkspaces(context.workspace.id, { inviteError: "permission" });
+  }
+
+  const invitation = await getDb().workspaceInvitation.findFirst({
+    where: {
+      id: invitationId,
       workspaceId: context.workspace.id,
-      userId: invitedUser.id,
-      role,
-      invitedById: context.user.id,
-      status: "ACTIVE",
-    },
-    update: {
-      role,
-      invitedById: context.user.id,
-      status: "ACTIVE",
+      status: "PENDING",
     },
   });
-  await db.workspaceInvitation.updateMany({
+
+  if (!invitation) {
+    redirectToWorkspaces(context.workspace.id, { inviteError: "missing-invite" });
+  }
+
+  const refreshedInvitation = await createOrRefreshWorkspaceInvitation({
+    email: invitation.email,
+    invitedBy: context.user,
+    role: invitation.role,
+    workspaceId: context.workspace.id,
+  });
+
+  revalidatePath("/app", "layout");
+  redirectToWorkspaces(
+    context.workspace.id,
+    refreshedInvitation.deliveryStatus.sent
+      ? { inviteStatus: "resent" }
+      : {
+          inviteLink: refreshedInvitation.inviteUrl,
+          inviteStatus: "manual",
+        },
+  );
+}
+
+export async function revokeWorkspaceInvitation(formData: FormData) {
+  const workspaceId = getText(formData, "workspaceId");
+  const invitationId = getText(formData, "invitationId");
+  const context = await requireContext(workspaceId);
+
+  if (!canManageWorkspace(context.role)) {
+    redirectToWorkspaces(context.workspace.id, { inviteError: "permission" });
+  }
+
+  await getDb().workspaceInvitation.updateMany({
     where: {
+      id: invitationId,
       workspaceId: context.workspace.id,
-      email,
       status: "PENDING",
     },
     data: {
-      acceptedAt: new Date(),
-      acceptedById: invitedUser.id,
-      status: "ACCEPTED",
+      status: "REVOKED",
+      tokenHash: null,
     },
   });
 
   revalidatePath("/app", "layout");
-  redirectToWorkspaces(context.workspace.id, { inviteStatus: "added" });
+  redirectToWorkspaces(context.workspace.id, { inviteStatus: "revoked" });
 }
 
 export async function createAgentDraft(formData: FormData) {

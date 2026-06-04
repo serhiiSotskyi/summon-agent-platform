@@ -102,54 +102,6 @@ async function ensureOwnerMembership(workspaceId: string, userId: string) {
   });
 }
 
-async function acceptPendingWorkspaceInvitations(user: User) {
-  const db = getDb();
-  const email = user.email.toLowerCase();
-  const invitations = await db.workspaceInvitation.findMany({
-    where: {
-      email,
-      status: "PENDING",
-    },
-  });
-
-  if (invitations.length === 0) {
-    return;
-  }
-
-  await db.$transaction(
-    invitations.flatMap((invitation) => [
-      db.workspaceMembership.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: invitation.workspaceId,
-            userId: user.id,
-          },
-        },
-        create: {
-          workspaceId: invitation.workspaceId,
-          userId: user.id,
-          role: invitation.role,
-          invitedById: invitation.invitedById,
-          status: "ACTIVE",
-        },
-        update: {
-          role: invitation.role,
-          invitedById: invitation.invitedById,
-          status: "ACTIVE",
-        },
-      }),
-      db.workspaceInvitation.update({
-        where: { id: invitation.id },
-        data: {
-          acceptedAt: new Date(),
-          acceptedById: user.id,
-          status: "ACCEPTED",
-        },
-      }),
-    ]),
-  );
-}
-
 export async function ensurePersonalWorkspace(user: User) {
   const db = getDb();
   const existing = await db.workspace.findFirst({
@@ -197,11 +149,27 @@ export async function ensurePersonalWorkspace(user: User) {
   }
 }
 
-export async function getCurrentUserContext(workspaceId?: string) {
+export async function getAuthenticatedDbUser() {
   const authResult = await auth();
   const clerkUserId = authResult.userId;
 
   if (!clerkUserId) {
+    return null;
+  }
+
+  const claims = authResult.sessionClaims as Claims | undefined;
+  const user = await ensureDbUser(clerkUserId, claims);
+
+  return {
+    clerkUserId,
+    user,
+  };
+}
+
+export async function getCurrentUserContext(workspaceId?: string) {
+  const authenticatedUser = await getAuthenticatedDbUser();
+
+  if (!authenticatedUser) {
     return {
       isAuthenticated: false,
       clerkUserId: null,
@@ -213,10 +181,8 @@ export async function getCurrentUserContext(workspaceId?: string) {
     } satisfies CurrentUserContext;
   }
 
-  const claims = authResult.sessionClaims as Claims | undefined;
-  const user = await ensureDbUser(clerkUserId, claims);
+  const { clerkUserId, user } = authenticatedUser;
   await ensurePersonalWorkspace(user);
-  await acceptPendingWorkspaceInvitations(user);
 
   const memberships = await getDb().workspaceMembership.findMany({
     where: {

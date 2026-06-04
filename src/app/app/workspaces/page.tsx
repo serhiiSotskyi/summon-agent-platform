@@ -1,4 +1,4 @@
-import { Plus, Users } from "lucide-react";
+import { Mail, Plus, RotateCw, Users, XCircle } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -16,23 +16,34 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { canManageWorkspace, getCurrentUserContext } from "@/lib/app/context";
 import { formatRelativeTime } from "@/lib/app/format";
 import { getDb } from "@/lib/db";
-import { createSharedWorkspace, inviteWorkspaceMember } from "../actions";
+import {
+  createSharedWorkspace,
+  inviteWorkspaceMember,
+  resendWorkspaceInvitation,
+  revokeWorkspaceInvitation,
+} from "../actions";
 
 type SearchParams = Promise<{
   inviteError?: string;
+  inviteLink?: string;
   inviteStatus?: string;
   workspace?: string;
 }>;
 
 const inviteStatusMessages: Record<string, string> = {
   added: "Member added to this workspace.",
-  pending:
-    "Invitation saved. When that email signs in, they will be added to this workspace automatically.",
+  manual:
+    "Invitation created. Email delivery is not configured yet, so send the invite link manually.",
+  resent: "Invitation email sent again.",
+  revoked: "Invitation revoked.",
+  sent: "Invitation email sent.",
+  updated: "Existing member role updated.",
 };
 
 const inviteErrorMessages: Record<string, string> = {
   "invalid-email": "Enter a valid email address.",
   "invalid-role": "Choose a valid workspace role.",
+  "missing-invite": "That pending invitation could not be found.",
   owner: "Workspace owners cannot be changed from this invite form.",
   permission: "Only workspace owners and admins can invite members.",
   self: "You are already a member of this workspace.",
@@ -76,6 +87,7 @@ export default async function WorkspacesPage({
   const inviteError = params.inviteError
     ? inviteErrorMessages[params.inviteError]
     : undefined;
+  const inviteLink = params.inviteLink;
 
   return (
     <>
@@ -87,6 +99,18 @@ export default async function WorkspacesPage({
       {inviteStatus ? (
         <Alert className="mb-5 border-emerald-300/20 bg-emerald-300/10 text-emerald-50/90">
           {inviteStatus}
+          {inviteLink ? (
+            <div className="mt-3 space-y-2">
+              <div className="text-xs uppercase tracking-[0.18em] text-emerald-100/70">
+                Manual invite link
+              </div>
+              <input
+                className="h-10 w-full rounded-md border border-emerald-200/20 bg-black/30 px-3 font-mono text-xs text-emerald-50 outline-none"
+                readOnly
+                value={inviteLink}
+              />
+            </div>
+          ) : null}
         </Alert>
       ) : null}
       {inviteError ? (
@@ -149,6 +173,7 @@ export default async function WorkspacesPage({
                     <TH>Email</TH>
                     <TH>Role</TH>
                     <TH>Joined / status</TH>
+                    <TH>Actions</TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -162,6 +187,7 @@ export default async function WorkspacesPage({
                         <StatusBadge status={membership.role} />
                       </TD>
                       <TD>{formatRelativeTime(membership.createdAt)}</TD>
+                      <TD className="text-zinc-500">Active</TD>
                     </TR>
                   ))}
                   {pendingInvitations.map((invitation) => (
@@ -175,6 +201,46 @@ export default async function WorkspacesPage({
                       </TD>
                       <TD>
                         <StatusBadge status="INVITED" />
+                      </TD>
+                      <TD>
+                        {canInvite ? (
+                          <div className="flex flex-wrap gap-2">
+                            <form action={resendWorkspaceInvitation}>
+                              <input
+                                name="workspaceId"
+                                type="hidden"
+                                value={context.workspace.id}
+                              />
+                              <input
+                                name="invitationId"
+                                type="hidden"
+                                value={invitation.id}
+                              />
+                              <Button size="sm" type="submit" variant="secondary">
+                                <RotateCw aria-hidden />
+                                Resend
+                              </Button>
+                            </form>
+                            <form action={revokeWorkspaceInvitation}>
+                              <input
+                                name="workspaceId"
+                                type="hidden"
+                                value={context.workspace.id}
+                              />
+                              <input
+                                name="invitationId"
+                                type="hidden"
+                                value={invitation.id}
+                              />
+                              <Button size="sm" type="submit" variant="ghost">
+                                <XCircle aria-hidden />
+                                Revoke
+                              </Button>
+                            </form>
+                          </div>
+                        ) : (
+                          <span className="text-zinc-500">Pending</span>
+                        )}
                       </TD>
                     </TR>
                   ))}
@@ -221,8 +287,8 @@ export default async function WorkspacesPage({
                   </Select>
                 </div>
                 <Button type="submit">
-                  <Users aria-hidden />
-                  Add member
+                  <Mail aria-hidden />
+                  Send invite
                 </Button>
               </form>
             ) : null}
@@ -255,9 +321,9 @@ export default async function WorkspacesPage({
             </form>
             <div className="mt-5 rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-400">
               <Users aria-hidden className="mb-3 size-4 text-zinc-300" />
-              Email delivery is not enabled yet. For v1, this saves a pending
-              invite and auto-adds the teammate after they sign in with the same
-              email.
+              Invites use secure links. Add Resend settings to send email
+              automatically; until then, copy the generated link and send it
+              manually.
             </div>
           </CardContent>
         </Card>

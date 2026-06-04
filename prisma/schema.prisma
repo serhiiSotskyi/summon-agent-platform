@@ -139,20 +139,23 @@ model WorkspaceMembership {
 }
 
 model WorkspaceInvitation {
-  id           String                    @id @default(cuid())
-  workspaceId  String
-  email        String
-  role         MembershipRole
-  status       WorkspaceInvitationStatus @default(PENDING)
-  invitedById  String?
-  acceptedById String?
-  createdAt    DateTime                  @default(now())
-  updatedAt    DateTime                  @updatedAt
-  acceptedAt   DateTime?
-  expiresAt    DateTime?
-  workspace    Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  invitedBy    User?                     @relation("WorkspaceInvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
-  acceptedBy   User?                     @relation("WorkspaceInvitationAcceptedBy", fields: [acceptedById], references: [id], onDelete: SetNull)
+  id             String                    @id @default(cuid())
+  workspaceId    String
+  email          String
+  role           MembershipRole
+  tokenHash      String?                   @unique
+  status         WorkspaceInvitationStatus @default(PENDING)
+  invitedById    String?
+  acceptedById   String?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+  lastSentAt     DateTime?
+  acceptedAt     DateTime?
+  expiresAt      DateTime?
+  deliveryStatus Json?
+  workspace      Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy      User?                     @relation("WorkspaceInvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedBy     User?                     @relation("WorkspaceInvitationAcceptedBy", fields: [acceptedById], references: [id], onDelete: SetNull)
 
   @@unique([workspaceId, email])
   @@index([email, status])
