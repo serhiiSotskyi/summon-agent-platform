@@ -27,6 +27,13 @@ enum MembershipStatus {
   REMOVED
 }
 
+enum WorkspaceInvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
 enum AgentStatus {
   DRAFT
   ACTIVE
@@ -80,19 +87,21 @@ enum RiskLevel {
 }
 
 model User {
-  id             String                @id @default(cuid())
-  clerkUserId    String                @unique
-  email          String                @unique
-  name           String?
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
-  memberships    WorkspaceMembership[]
-  ownedWorkspaces Workspace[]           @relation("WorkspaceOwner")
-  createdAgents  Agent[]               @relation("AgentCreatedBy")
-  triggeredRuns  AgentRun[]            @relation("AgentRunTriggeredBy")
-  connectedCredentials ConnectorCredential[] @relation("ConnectorCreatedBy")
-  requestedApprovals ApprovalRequest[] @relation("ApprovalRequestedBy")
-  reviewedApprovals  ApprovalRequest[] @relation("ApprovalReviewedBy")
+  id                           String                @id @default(cuid())
+  clerkUserId                  String                @unique
+  email                        String                @unique
+  name                         String?
+  createdAt                    DateTime              @default(now())
+  updatedAt                    DateTime              @updatedAt
+  memberships                  WorkspaceMembership[]
+  ownedWorkspaces              Workspace[]           @relation("WorkspaceOwner")
+  sentWorkspaceInvitations     WorkspaceInvitation[] @relation("WorkspaceInvitationInvitedBy")
+  acceptedWorkspaceInvitations WorkspaceInvitation[] @relation("WorkspaceInvitationAcceptedBy")
+  createdAgents                Agent[]               @relation("AgentCreatedBy")
+  triggeredRuns                AgentRun[]            @relation("AgentRunTriggeredBy")
+  connectedCredentials         ConnectorCredential[] @relation("ConnectorCreatedBy")
+  requestedApprovals           ApprovalRequest[]     @relation("ApprovalRequestedBy")
+  reviewedApprovals            ApprovalRequest[]     @relation("ApprovalReviewedBy")
 }
 
 model Workspace {
@@ -107,6 +116,7 @@ model Workspace {
   updatedAt            DateTime              @updatedAt
   owner                User                  @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   memberships          WorkspaceMembership[]
+  invitations          WorkspaceInvitation[]
   agents               Agent[]
   connectorCredentials ConnectorCredential[]
   approvalRequests     ApprovalRequest[]
@@ -126,6 +136,27 @@ model WorkspaceMembership {
 
   @@unique([workspaceId, userId])
   @@index([userId])
+}
+
+model WorkspaceInvitation {
+  id           String                    @id @default(cuid())
+  workspaceId  String
+  email        String
+  role         MembershipRole
+  status       WorkspaceInvitationStatus @default(PENDING)
+  invitedById  String?
+  acceptedById String?
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+  acceptedAt   DateTime?
+  expiresAt    DateTime?
+  workspace    Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy    User?                     @relation("WorkspaceInvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  acceptedBy   User?                     @relation("WorkspaceInvitationAcceptedBy", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, email])
+  @@index([email, status])
+  @@index([workspaceId, status])
 }
 
 model Agent {
@@ -155,22 +186,22 @@ model Agent {
 }
 
 model AgentRun {
-  id             String         @id @default(cuid())
-  agentId        String
-  triggeredById  String?
-  triggerType    TriggerType
-  status         AgentRunStatus @default(QUEUED)
-  summary        String?
-  output         Json?
-  error          String?
-  durationMs     Int?
-  costEstimate   Decimal?       @db.Decimal(12, 6)
-  deliveryStatus Json?
-  retainedUntil  DateTime
-  triggeredAt    DateTime       @default(now())
-  completedAt    DateTime?
-  agent          Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  triggeredBy    User?          @relation("AgentRunTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  id               String            @id @default(cuid())
+  agentId          String
+  triggeredById    String?
+  triggerType      TriggerType
+  status           AgentRunStatus    @default(QUEUED)
+  summary          String?
+  output           Json?
+  error            String?
+  durationMs       Int?
+  costEstimate     Decimal?          @db.Decimal(12, 6)
+  deliveryStatus   Json?
+  retainedUntil    DateTime
+  triggeredAt      DateTime          @default(now())
+  completedAt      DateTime?
+  agent            Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  triggeredBy      User?             @relation("AgentRunTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
   approvalRequests ApprovalRequest[]
 
   @@index([agentId, triggeredAt])

@@ -102,6 +102,54 @@ async function ensureOwnerMembership(workspaceId: string, userId: string) {
   });
 }
 
+async function acceptPendingWorkspaceInvitations(user: User) {
+  const db = getDb();
+  const email = user.email.toLowerCase();
+  const invitations = await db.workspaceInvitation.findMany({
+    where: {
+      email,
+      status: "PENDING",
+    },
+  });
+
+  if (invitations.length === 0) {
+    return;
+  }
+
+  await db.$transaction(
+    invitations.flatMap((invitation) => [
+      db.workspaceMembership.upsert({
+        where: {
+          workspaceId_userId: {
+            workspaceId: invitation.workspaceId,
+            userId: user.id,
+          },
+        },
+        create: {
+          workspaceId: invitation.workspaceId,
+          userId: user.id,
+          role: invitation.role,
+          invitedById: invitation.invitedById,
+          status: "ACTIVE",
+        },
+        update: {
+          role: invitation.role,
+          invitedById: invitation.invitedById,
+          status: "ACTIVE",
+        },
+      }),
+      db.workspaceInvitation.update({
+        where: { id: invitation.id },
+        data: {
+          acceptedAt: new Date(),
+          acceptedById: user.id,
+          status: "ACCEPTED",
+        },
+      }),
+    ]),
+  );
+}
+
 export async function ensurePersonalWorkspace(user: User) {
   const db = getDb();
   const existing = await db.workspace.findFirst({
@@ -168,6 +216,7 @@ export async function getCurrentUserContext(workspaceId?: string) {
   const claims = authResult.sessionClaims as Claims | undefined;
   const user = await ensureDbUser(clerkUserId, claims);
   await ensurePersonalWorkspace(user);
+  await acceptPendingWorkspaceInvitations(user);
 
   const memberships = await getDb().workspaceMembership.findMany({
     where: {

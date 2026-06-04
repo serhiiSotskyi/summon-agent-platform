@@ -43,6 +43,18 @@ function asJsonObject(value: unknown): Prisma.InputJsonObject {
     : {};
 }
 
+function redirectToWorkspaces(
+  workspaceId: string,
+  params: Record<string, string>,
+): never {
+  const searchParams = new URLSearchParams({
+    workspace: workspaceId,
+    ...params,
+  });
+
+  redirect(`/app/workspaces?${searchParams.toString()}`);
+}
+
 export async function createSharedWorkspace(formData: FormData) {
   const context = await requireContext();
   const name = getText(formData, "name", "Summon shared workspace");
@@ -65,19 +77,19 @@ export async function inviteWorkspaceMember(formData: FormData) {
   const context = await requireContext(workspaceId);
 
   if (!canManageWorkspace(context.role)) {
-    throw new Error("You do not have permission to invite workspace members.");
+    redirectToWorkspaces(context.workspace.id, { inviteError: "permission" });
   }
 
   if (context.workspace.type !== "SHARED") {
-    throw new Error("Create or select a shared workspace before inviting members.");
+    redirectToWorkspaces(context.workspace.id, { inviteError: "shared-required" });
   }
 
   if (!email.includes("@")) {
-    throw new Error("Enter a valid email address.");
+    redirectToWorkspaces(context.workspace.id, { inviteError: "invalid-email" });
   }
 
   if (!["ADMIN", "CREATOR", "VIEWER"].includes(role)) {
-    throw new Error("Invalid workspace role.");
+    redirectToWorkspaces(context.workspace.id, { inviteError: "invalid-role" });
   }
 
   const db = getDb();
@@ -91,13 +103,35 @@ export async function inviteWorkspaceMember(formData: FormData) {
   });
 
   if (!invitedUser) {
-    throw new Error(
-      "That user has not signed into this app yet. Ask them to sign in once, then invite them again.",
-    );
+    await db.workspaceInvitation.upsert({
+      where: {
+        workspaceId_email: {
+          workspaceId: context.workspace.id,
+          email,
+        },
+      },
+      create: {
+        workspaceId: context.workspace.id,
+        email,
+        role,
+        invitedById: context.user.id,
+        status: "PENDING",
+      },
+      update: {
+        acceptedAt: null,
+        acceptedById: null,
+        invitedById: context.user.id,
+        role,
+        status: "PENDING",
+      },
+    });
+
+    revalidatePath("/app", "layout");
+    redirectToWorkspaces(context.workspace.id, { inviteStatus: "pending" });
   }
 
   if (invitedUser.id === context.user.id) {
-    throw new Error("You are already a member of this workspace.");
+    redirectToWorkspaces(context.workspace.id, { inviteError: "self" });
   }
 
   const existingMembership = await db.workspaceMembership.findUnique({
@@ -110,7 +144,7 @@ export async function inviteWorkspaceMember(formData: FormData) {
   });
 
   if (existingMembership?.role === "OWNER") {
-    throw new Error("Workspace owners cannot be changed from this invite form.");
+    redirectToWorkspaces(context.workspace.id, { inviteError: "owner" });
   }
 
   await db.workspaceMembership.upsert({
@@ -133,9 +167,21 @@ export async function inviteWorkspaceMember(formData: FormData) {
       status: "ACTIVE",
     },
   });
+  await db.workspaceInvitation.updateMany({
+    where: {
+      workspaceId: context.workspace.id,
+      email,
+      status: "PENDING",
+    },
+    data: {
+      acceptedAt: new Date(),
+      acceptedById: invitedUser.id,
+      status: "ACCEPTED",
+    },
+  });
 
   revalidatePath("/app", "layout");
-  redirect(`/app/workspaces?workspace=${context.workspace.id}`);
+  redirectToWorkspaces(context.workspace.id, { inviteStatus: "added" });
 }
 
 export async function createAgentDraft(formData: FormData) {

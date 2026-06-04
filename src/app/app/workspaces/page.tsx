@@ -2,6 +2,7 @@ import { Plus, Users } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,7 +18,26 @@ import { formatRelativeTime } from "@/lib/app/format";
 import { getDb } from "@/lib/db";
 import { createSharedWorkspace, inviteWorkspaceMember } from "../actions";
 
-type SearchParams = Promise<{ workspace?: string }>;
+type SearchParams = Promise<{
+  inviteError?: string;
+  inviteStatus?: string;
+  workspace?: string;
+}>;
+
+const inviteStatusMessages: Record<string, string> = {
+  added: "Member added to this workspace.",
+  pending:
+    "Invitation saved. When that email signs in, they will be added to this workspace automatically.",
+};
+
+const inviteErrorMessages: Record<string, string> = {
+  "invalid-email": "Enter a valid email address.",
+  "invalid-role": "Choose a valid workspace role.",
+  owner: "Workspace owners cannot be changed from this invite form.",
+  permission: "Only workspace owners and admins can invite members.",
+  self: "You are already a member of this workspace.",
+  "shared-required": "Create or select a shared workspace before inviting members.",
+};
 
 export default async function WorkspacesPage({
   searchParams,
@@ -43,6 +63,19 @@ export default async function WorkspacesPage({
     },
     orderBy: [{ role: "asc" }, { createdAt: "asc" }],
   });
+  const pendingInvitations = await getDb().workspaceInvitation.findMany({
+    where: {
+      workspaceId: context.workspace.id,
+      status: "PENDING",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const inviteStatus = params.inviteStatus
+    ? inviteStatusMessages[params.inviteStatus]
+    : undefined;
+  const inviteError = params.inviteError
+    ? inviteErrorMessages[params.inviteError]
+    : undefined;
 
   return (
     <>
@@ -51,6 +84,16 @@ export default async function WorkspacesPage({
         eyebrow="Workspaces"
         title="Workspace management"
       />
+      {inviteStatus ? (
+        <Alert className="mb-5 border-emerald-300/20 bg-emerald-300/10 text-emerald-50/90">
+          {inviteStatus}
+        </Alert>
+      ) : null}
+      {inviteError ? (
+        <Alert className="mb-5 border-red-300/20 bg-red-400/10 text-red-50/90">
+          {inviteError}
+        </Alert>
+      ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-5">
@@ -95,7 +138,7 @@ export default async function WorkspacesPage({
             <CardHeader>
               <CardTitle>Members</CardTitle>
               <CardDescription>
-                Active members for {context.workspace.name}.
+                Active and pending members for {context.workspace.name}.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -105,7 +148,7 @@ export default async function WorkspacesPage({
                     <TH>Member</TH>
                     <TH>Email</TH>
                     <TH>Role</TH>
-                    <TH>Joined</TH>
+                    <TH>Joined / status</TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -119,6 +162,20 @@ export default async function WorkspacesPage({
                         <StatusBadge status={membership.role} />
                       </TD>
                       <TD>{formatRelativeTime(membership.createdAt)}</TD>
+                    </TR>
+                  ))}
+                  {pendingInvitations.map((invitation) => (
+                    <TR key={invitation.id}>
+                      <TD className="font-medium text-white">
+                        Pending invite
+                      </TD>
+                      <TD>{invitation.email}</TD>
+                      <TD>
+                        <StatusBadge status={invitation.role} />
+                      </TD>
+                      <TD>
+                        <StatusBadge status="INVITED" />
+                      </TD>
                     </TR>
                   ))}
                 </TBody>
@@ -198,8 +255,9 @@ export default async function WorkspacesPage({
             </form>
             <div className="mt-5 rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-400">
               <Users aria-hidden className="mb-3 size-4 text-zinc-300" />
-              Email delivery is not enabled yet. For v1, ask the teammate to
-              sign into the app once, then add them by email here.
+              Email delivery is not enabled yet. For v1, this saves a pending
+              invite and auto-adds the teammate after they sign in with the same
+              email.
             </div>
           </CardContent>
         </Card>
