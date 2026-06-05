@@ -1,4 +1,4 @@
-import { ArrowLeft, Play } from "lucide-react";
+import { ArrowLeft, Edit, Pause, Play, Rocket } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { EmptyState } from "@/components/app/empty-state";
@@ -11,8 +11,14 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { demoAgents } from "@/lib/app/demo";
 import { formatRelativeTime } from "@/lib/app/format";
+import { canCreateAgent } from "@/lib/app/permissions";
+import {
+  formatScheduleSummary,
+  getNextScheduleDate,
+  readScheduleConfig,
+} from "@/lib/agents/schedules";
 import { getDb } from "@/lib/db";
-import { createManualRun } from "../../actions";
+import { activateAgent, createManualRun, pauseAgent } from "../../actions";
 
 type Params = Promise<{ agentId: string }>;
 type SearchParams = Promise<{ workspace?: string; demo?: string }>;
@@ -55,6 +61,11 @@ export default async function AgentDetailPage({
     notFound();
   }
 
+  const schedule =
+    !demo && "triggerConfig" in agent ? readScheduleConfig(agent.triggerConfig) : null;
+  const nextScheduledRun = getNextScheduleDate(schedule);
+  const canEdit = !demo && canCreateAgent(context.role);
+
   return (
     <>
       <PageHeader
@@ -66,6 +77,42 @@ export default async function AgentDetailPage({
                 Agents
               </Link>
             </Button>
+            {canEdit ? (
+              <Button asChild variant="secondary">
+                <Link href={`/app/agents/${agent.id}/edit?workspace=${context.workspace.id}`}>
+                  <Edit aria-hidden />
+                  Edit
+                </Link>
+              </Button>
+            ) : null}
+            {canEdit && agent.status !== "ACTIVE" ? (
+              <form action={activateAgent}>
+                <input name="agentId" type="hidden" value={agent.id} />
+                <input
+                  name="workspaceId"
+                  type="hidden"
+                  value={context.workspace.id}
+                />
+                <Button type="submit">
+                  <Rocket aria-hidden />
+                  Activate
+                </Button>
+              </form>
+            ) : null}
+            {canEdit && agent.status === "ACTIVE" ? (
+              <form action={pauseAgent}>
+                <input name="agentId" type="hidden" value={agent.id} />
+                <input
+                  name="workspaceId"
+                  type="hidden"
+                  value={context.workspace.id}
+                />
+                <Button type="submit" variant="secondary">
+                  <Pause aria-hidden />
+                  Pause
+                </Button>
+              </form>
+            ) : null}
             {!demo ? (
               <form action={createManualRun}>
                 <input name="agentId" type="hidden" value={agent.id} />
@@ -76,7 +123,7 @@ export default async function AgentDetailPage({
                 />
                 <Button type="submit">
                   <Play aria-hidden />
-                  Run now
+                  Run test
                 </Button>
               </form>
             ) : null}
@@ -117,6 +164,11 @@ export default async function AgentDetailPage({
               <p className="mt-2 text-sm text-white">
                 {agent.triggerType.toLowerCase()}
               </p>
+              {agent.triggerType === "SCHEDULED" ? (
+                <p className="mt-2 text-xs leading-5 text-zinc-500">
+                  {formatScheduleSummary(schedule)}
+                </p>
+              ) : null}
             </div>
             <div className="rounded-md border border-white/10 bg-black/20 p-4">
               <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
@@ -128,6 +180,21 @@ export default async function AgentDetailPage({
                   : "ask before changes"}
               </p>
             </div>
+            {agent.triggerType === "SCHEDULED" ? (
+              <div className="rounded-md border border-white/10 bg-black/20 p-4 md:col-span-2">
+                <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                  Next scheduled run
+                </p>
+                <p className="mt-2 text-sm text-white">
+                  {agent.status === "ACTIVE" && nextScheduledRun
+                    ? `${nextScheduledRun.toLocaleString("en-GB", {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })} (${formatRelativeTime(nextScheduledRun)})`
+                    : "Activate the agent to schedule runs."}
+                </p>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

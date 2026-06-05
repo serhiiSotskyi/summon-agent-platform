@@ -1,66 +1,117 @@
-import { Bot, Rocket, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Save } from "lucide-react";
+import Link from "next/link";
+import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
+import { canCreateAgent } from "@/lib/app/permissions";
+import {
+  DEFAULT_SCHEDULE_TIMEZONE,
+  readScheduleConfig,
+} from "@/lib/agents/schedules";
 import { connectorCatalog } from "@/lib/connectors/catalog";
-import { DEFAULT_SCHEDULE_TIMEZONE } from "@/lib/agents/schedules";
-import { createAgentDraft } from "../../actions";
+import { getDb } from "@/lib/db";
+import { updateAgentConfig } from "../../../actions";
 
-type SearchParams = Promise<{ workspace?: string; demo?: string }>;
+type Params = Promise<{ agentId: string }>;
+type SearchParams = Promise<{ workspace?: string }>;
 
-export default async function NewAgentPage({
+function toolsFromJson(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((tool): tool is string => typeof tool === "string")
+    : [];
+}
+
+export default async function EditAgentPage({
+  params,
   searchParams,
 }: {
+  params: Params;
   searchParams: SearchParams;
 }) {
-  const params = await searchParams;
-  const context = await getCurrentUserContext(params.workspace);
+  const [{ agentId }, query] = await Promise.all([params, searchParams]);
+  const context = await getCurrentUserContext(query.workspace);
 
   if (!context.isAuthenticated) {
     return null;
   }
 
+  if (!canCreateAgent(context.role)) {
+    notFound();
+  }
+
+  const agent = await getDb().agent.findFirst({
+    where: {
+      id: agentId,
+      workspaceId: context.workspace.id,
+      status: { not: "DELETED" },
+    },
+  });
+
+  if (!agent) {
+    notFound();
+  }
+
+  const selectedTools = new Set(toolsFromJson(agent.tools));
+  const schedule = readScheduleConfig(agent.triggerConfig);
+
   return (
     <>
       <PageHeader
-        description="Create a draft from plain English, then review generated tools, prompt, permissions, and trigger before activation."
-        eyebrow="Agent creator"
-        title="New agent"
+        actions={
+          <Button asChild variant="secondary">
+            <Link href={`/app/agents/${agent.id}?workspace=${context.workspace.id}`}>
+              <ArrowLeft aria-hidden />
+              Agent
+            </Link>
+          </Button>
+        }
+        description="Update model, prompt, tools, permissions, and schedule. Active scheduled agents are rescheduled on save."
+        eyebrow="Agent editor"
+        title={`Edit ${agent.name}`}
       />
 
-      <form action={createAgentDraft} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+      <form action={updateAgentConfig} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+        <input name="agentId" type="hidden" value={agent.id} />
         <input name="workspaceId" type="hidden" value={context.workspace.id} />
+
         <Card>
           <CardHeader>
-            <CardTitle>Describe the job</CardTitle>
+            <CardTitle>Configuration</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
-            <div className="space-y-2">
-              <Label htmlFor="prompt">Plain-English prompt</Label>
-              <Textarea
-                id="prompt"
-                name="prompt"
-                placeholder="Review paid acquisition performance every Monday and draft a client-ready update."
-                required
-              />
-            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="name">Agent name</Label>
-                <Input id="name" name="name" placeholder="Optional" />
+                <Input id="name" name="name" defaultValue={agent.name} required />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="description">Description</Label>
-                <Input id="description" name="description" placeholder="Optional" />
+                <Input
+                  id="description"
+                  name="description"
+                  defaultValue={agent.description ?? ""}
+                />
               </div>
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="systemPrompt">System prompt</Label>
+              <Textarea
+                id="systemPrompt"
+                name="systemPrompt"
+                defaultValue={agent.systemPrompt}
+                required
+              />
+            </div>
+
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label htmlFor="llmProvider">Provider</Label>
-                <Select id="llmProvider" name="llmProvider" defaultValue="openai">
+                <Select id="llmProvider" name="llmProvider" defaultValue={agent.llmProvider}>
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="google">Google</option>
@@ -68,21 +119,22 @@ export default async function NewAgentPage({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="llmModel">Model</Label>
-                <Input id="llmModel" name="llmModel" defaultValue="gpt-4.1" />
+                <Input id="llmModel" name="llmModel" defaultValue={agent.llmModel} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="triggerType">Trigger</Label>
-                <Select id="triggerType" name="triggerType" defaultValue="MANUAL">
+                <Select id="triggerType" name="triggerType" defaultValue={agent.triggerType}>
                   <option value="MANUAL">Manual</option>
                   <option value="SCHEDULED">Scheduled</option>
                 </Select>
               </div>
             </div>
+
             <div className="space-y-3 rounded-md border border-white/10 bg-black/20 p-4">
               <div>
                 <p className="text-sm font-medium text-white">Schedule</p>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Used only when Trigger is Scheduled. Draft agents do not run until activated.
+                  Used only when Trigger is Scheduled.
                 </p>
               </div>
               <div className="grid gap-4 md:grid-cols-4">
@@ -91,7 +143,7 @@ export default async function NewAgentPage({
                   <Select
                     id="scheduleFrequency"
                     name="scheduleFrequency"
-                    defaultValue="DAILY"
+                    defaultValue={schedule?.frequency ?? "DAILY"}
                   >
                     <option value="HOURLY">Hourly</option>
                     <option value="DAILY">Daily</option>
@@ -104,7 +156,7 @@ export default async function NewAgentPage({
                     id="scheduleTimeOfDay"
                     name="scheduleTimeOfDay"
                     type="time"
-                    defaultValue="09:00"
+                    defaultValue={schedule?.timeOfDay ?? "09:00"}
                   />
                 </div>
                 <div className="space-y-2">
@@ -115,12 +167,16 @@ export default async function NewAgentPage({
                     type="number"
                     min="0"
                     max="59"
-                    defaultValue="0"
+                    defaultValue={schedule?.minute ?? 0}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="scheduleWeekday">Weekday</Label>
-                  <Select id="scheduleWeekday" name="scheduleWeekday" defaultValue="1">
+                  <Select
+                    id="scheduleWeekday"
+                    name="scheduleWeekday"
+                    defaultValue={String(schedule?.weekday ?? 1)}
+                  >
                     <option value="1">Monday</option>
                     <option value="2">Tuesday</option>
                     <option value="3">Wednesday</option>
@@ -136,7 +192,7 @@ export default async function NewAgentPage({
                 <Input
                   id="scheduleTimezone"
                   name="scheduleTimezone"
-                  defaultValue={DEFAULT_SCHEDULE_TIMEZONE}
+                  defaultValue={schedule?.timezone ?? DEFAULT_SCHEDULE_TIMEZONE}
                 />
               </div>
             </div>
@@ -156,6 +212,7 @@ export default async function NewAgentPage({
                 >
                   <input
                     className="mt-1 accent-emerald-300"
+                    defaultChecked={selectedTools.has(connector.key)}
                     name="tools"
                     type="checkbox"
                     value={connector.key}
@@ -183,7 +240,7 @@ export default async function NewAgentPage({
                 <Select
                   id="actionPermissionMode"
                   name="actionPermissionMode"
-                  defaultValue="ASK_BEFORE_CHANGES"
+                  defaultValue={agent.actionPermissionMode}
                 >
                   <option value="ASK_BEFORE_CHANGES">Ask before changes</option>
                   <option value="FULL_ACCESS">Full access</option>
@@ -194,33 +251,19 @@ export default async function NewAgentPage({
                 <Select
                   id="deliveryPermissionMode"
                   name="deliveryPermissionMode"
-                  defaultValue="ASK_BEFORE_SENDING"
+                  defaultValue={agent.deliveryPermissionMode}
                 >
                   <option value="ASK_BEFORE_SENDING">Ask before sending</option>
                   <option value="SEND_AUTOMATICALLY">Send automatically</option>
                 </Select>
               </div>
               <Alert>
-                <ShieldCheck aria-hidden className="mb-2 size-4" />
-                Protected actions always require approval, even when full access
-                is selected.
+                Active scheduled agents are rescheduled as soon as this form is saved.
               </Alert>
-              <div className="grid gap-3">
-                <Button className="w-full" name="intent" type="submit" value="activate">
-                  <Rocket aria-hidden />
-                  Save and activate
-                </Button>
-                <Button
-                  className="w-full"
-                  name="intent"
-                  type="submit"
-                  value="draft"
-                  variant="secondary"
-                >
-                  <Bot aria-hidden />
-                  Save draft
-                </Button>
-              </div>
+              <Button className="w-full" type="submit">
+                <Save aria-hidden />
+                Save changes
+              </Button>
             </CardContent>
           </Card>
         </div>

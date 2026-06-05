@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCurrentUserContext } from "@/lib/app/context";
-import { formatRelativeTime } from "@/lib/app/format";
+import { formatRelativeTime, formatUsd } from "@/lib/app/format";
 import { getDb } from "@/lib/db";
 
 type Params = Promise<{ runId: string }>;
@@ -110,6 +110,31 @@ function readApprovalDecision(output: Prisma.JsonValue) {
   return null;
 }
 
+function readCostMetadata(output: Prisma.JsonValue) {
+  if (
+    output &&
+    typeof output === "object" &&
+    !Array.isArray(output) &&
+    "cost" in output &&
+    output.cost &&
+    typeof output.cost === "object" &&
+    !Array.isArray(output.cost)
+  ) {
+    return output.cost as {
+      status?: string;
+      estimatedCostUsd?: number | null;
+      usage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        totalTokens?: number;
+      } | null;
+      pricingVersion?: string;
+    };
+  }
+
+  return null;
+}
+
 export default async function RunDetailPage({
   params,
   searchParams,
@@ -145,6 +170,7 @@ export default async function RunDetailPage({
   const connectorResults = readConnectorResults(run.output);
   const missingTools = readMissingTools(run.output);
   const approvalDecision = readApprovalDecision(run.output);
+  const costMetadata = readCostMetadata(run.output);
   const isActiveRun = run.status === "QUEUED" || run.status === "RUNNING";
 
   return (
@@ -228,9 +254,59 @@ export default async function RunDetailPage({
                 <p className="mt-2 text-sm text-white">{run.durationMs}ms</p>
               </div>
             ) : null}
+            <div className="rounded-md border border-white/10 bg-black/20 p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Estimated cost
+              </p>
+              <p className="mt-2 text-sm text-white">
+                {run.costEstimate ? formatUsd(run.costEstimate.toNumber()) : "Unknown"}
+              </p>
+              {costMetadata?.status ? (
+                <p className="mt-2 text-xs leading-5 text-zinc-500">
+                  {costMetadata.status.replaceAll("_", " ")}
+                  {costMetadata.pricingVersion
+                    ? ` - pricing ${costMetadata.pricingVersion}`
+                    : ""}
+                </p>
+              ) : null}
+            </div>
           </CardContent>
         </Card>
       </div>
+
+      {costMetadata?.usage ? (
+        <Card className="mt-5">
+          <CardHeader>
+            <CardTitle>Token usage</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-md border border-white/10 bg-black/20 p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Input
+              </p>
+              <p className="mt-2 text-sm text-white">
+                {costMetadata.usage.inputTokens?.toLocaleString() ?? "Unknown"}
+              </p>
+            </div>
+            <div className="rounded-md border border-white/10 bg-black/20 p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Output
+              </p>
+              <p className="mt-2 text-sm text-white">
+                {costMetadata.usage.outputTokens?.toLocaleString() ?? "Unknown"}
+              </p>
+            </div>
+            <div className="rounded-md border border-white/10 bg-black/20 p-4">
+              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Total
+              </p>
+              <p className="mt-2 text-sm text-white">
+                {costMetadata.usage.totalTokens?.toLocaleString() ?? "Unknown"}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {connectorResults.length > 0 ? (
         <Card className="mt-5">

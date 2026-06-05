@@ -2,13 +2,24 @@ import { Queue } from "bullmq";
 import { requireEnv } from "@/lib/env";
 
 export const AGENT_RUN_QUEUE_NAME = "agent-runs-v2";
+export const MANUAL_RUN_JOB_NAME = "manual-run";
+export const SCHEDULED_TRIGGER_JOB_NAME = "scheduled-trigger";
 
-export type AgentRunJob = {
+export type ManualAgentRunJob = {
+  kind?: "manual-run";
   agentId: string;
   agentRunId: string;
   workspaceId: string;
   triggeredById?: string;
 };
+
+export type ScheduledAgentTriggerJob = {
+  kind: "scheduled-trigger";
+  agentId: string;
+  workspaceId: string;
+};
+
+export type AgentRunJob = ManualAgentRunJob | ScheduledAgentTriggerJob;
 
 function createAgentRunQueue() {
   return new Queue<AgentRunJob>(AGENT_RUN_QUEUE_NAME, {

@@ -1,4 +1,4 @@
-import { Activity, Bot, Cable, ClipboardCheck, History } from "lucide-react";
+import { Activity, Bot, Cable, ClipboardCheck, DollarSign, History } from "lucide-react";
 import Link from "next/link";
 import { EmptyState } from "@/components/app/empty-state";
 import { MetricCard } from "@/components/app/metric-card";
@@ -12,7 +12,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { demoDashboard } from "@/lib/app/demo";
 import { getWorkspaceDashboard } from "@/lib/app/dashboard";
-import { formatRelativeTime } from "@/lib/app/format";
+import { formatRelativeTime, formatUsd } from "@/lib/app/format";
 
 type SearchParams = Promise<{
   workspace?: string;
@@ -61,7 +61,7 @@ export default async function AppDashboard({
         title="Workspace control plane"
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <MetricCard icon={Bot} label="Agents" value={dashboard.counts.agents} />
         <MetricCard
           icon={Activity}
@@ -78,6 +78,11 @@ export default async function AppDashboard({
           icon={Cable}
           label="Connectors"
           value={dashboard.counts.connectors}
+        />
+        <MetricCard
+          icon={DollarSign}
+          label="30d AI cost"
+          value={formatUsd(dashboard.counts.estimatedSpend30d)}
         />
       </div>
 

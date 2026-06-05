@@ -6,12 +6,22 @@ import { collectReadOnlyConnectorContext } from "@/lib/connectors/read-only";
 import { getDb } from "@/lib/db";
 import { llmProviderSchema } from "@/lib/env";
 import { createLlmClient } from "@/lib/llm";
-import { getAgentRunQueue, type AgentRunJob } from "@/lib/queue/agent-runs";
+import { getPricingMetadata } from "@/lib/llm/pricing";
+import {
+  getAgentRunQueue,
+  MANUAL_RUN_JOB_NAME,
+  type ManualAgentRunJob,
+} from "@/lib/queue/agent-runs";
 
 type CreateManualAgentRunInput = {
   agentId: string;
   workspaceId: string;
   triggeredById: string;
+};
+
+type CreateScheduledAgentRunInput = {
+  agentId: string;
+  workspaceId: string;
 };
 
 const DEFAULT_AGENT_RUN_TIMEOUT_MS = 90_000;
@@ -216,7 +226,8 @@ export async function createManualAgentRun(input: CreateManualAgentRunInput) {
   });
 
   try {
-    await getAgentRunQueue().add("manual-run", {
+    await getAgentRunQueue().add(MANUAL_RUN_JOB_NAME, {
+      kind: "manual-run",
       agentId: agent.id,
       agentRunId: run.id,
       workspaceId: input.workspaceId,
@@ -236,7 +247,56 @@ export async function createManualAgentRun(input: CreateManualAgentRunInput) {
   return run;
 }
 
-export async function executeAgentRun(job: AgentRunJob) {
+export async function createScheduledAgentRun(input: CreateScheduledAgentRunInput) {
+  const db = getDb();
+
+  return db.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.agentId}))`;
+
+      const agent = await tx.agent.findFirst({
+        where: {
+          id: input.agentId,
+          workspaceId: input.workspaceId,
+          status: "ACTIVE",
+          triggerType: "SCHEDULED",
+        },
+      });
+
+      if (!agent) {
+        return null;
+      }
+
+      const existingActiveRun = await tx.agentRun.findFirst({
+        where: {
+          agentId: agent.id,
+          triggerType: "SCHEDULED",
+          status: { in: ["QUEUED", "RUNNING"] },
+        },
+        orderBy: { triggeredAt: "desc" },
+      });
+
+      if (existingActiveRun) {
+        return null;
+      }
+
+      return tx.agentRun.create({
+        data: {
+          agentId: agent.id,
+          triggerType: "SCHEDULED",
+          status: "QUEUED",
+          retainedUntil: getRetainedUntil(),
+          summary: "Scheduled run queued.",
+        },
+      });
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    },
+  );
+}
+
+export async function executeAgentRun(job: ManualAgentRunJob) {
   const db = getDb();
   const startedAt = Date.now();
 
@@ -301,6 +361,13 @@ export async function executeAgentRun(job: AgentRunJob) {
       mode: "read_only",
       provider: result.provider,
       model: result.model,
+      usage: (result.usage ?? null) as Prisma.InputJsonValue,
+      cost: getPricingMetadata({
+        provider: result.provider,
+        model: result.model,
+        usage: result.usage,
+        estimatedCostUsd: result.estimatedCostUsd,
+      }) as Prisma.InputJsonObject,
       text: result.text,
       requestedTools: tools,
       connectedTools: connectorContext.connectedTools,
@@ -318,6 +385,10 @@ export async function executeAgentRun(job: AgentRunJob) {
         status: "SUCCESS",
         summary: summarizeOutput(result.text),
         output,
+        costEstimate:
+          result.estimatedCostUsd !== null && result.estimatedCostUsd !== undefined
+            ? new Prisma.Decimal(result.estimatedCostUsd.toFixed(6))
+            : null,
         durationMs: Date.now() - startedAt,
         completedAt: new Date(),
       },

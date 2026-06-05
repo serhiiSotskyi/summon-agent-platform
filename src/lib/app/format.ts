@@ -27,6 +27,27 @@ export function formatRelativeTime(date: Date | string | null | undefined) {
   return formatter.format(seconds, "second");
 }
 
+export function formatUsd(value: number | string | null | undefined) {
+  if (value === null || value === undefined) {
+    return "Unknown";
+  }
+
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    return "Unknown";
+  }
+
+  if (parsed > 0 && parsed < 0.0001) {
+    return "<$0.0001";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: parsed < 1 ? 4 : 2,
+  }).format(parsed);
+}
+
 export function titleFromPrompt(prompt: string) {
   const cleaned = prompt.replace(/\s+/g, " ").trim();
   if (!cleaned) {

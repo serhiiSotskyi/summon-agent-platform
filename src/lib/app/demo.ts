@@ -7,6 +7,7 @@ export const demoDashboard = {
     runs: 38,
     pendingApprovals: 3,
     connectors: 4,
+    estimatedSpend30d: 4.82,
   },
   recentRuns: [
     {

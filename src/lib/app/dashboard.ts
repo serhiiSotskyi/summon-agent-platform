@@ -13,6 +13,7 @@ export async function getWorkspaceDashboard(workspaceId: string) {
     recentRuns,
     approvals,
     hasSharedWorkspace,
+    spend,
   ] = await Promise.all([
     db.agent.count({
       where: { workspaceId, status: { not: "DELETED" } },
@@ -63,6 +64,18 @@ export async function getWorkspaceDashboard(workspaceId: string) {
     db.workspace.count({
       where: { id: workspaceId, type: "SHARED" },
     }),
+    db.agentRun.aggregate({
+      where: {
+        agent: { workspaceId },
+        costEstimate: { not: null },
+        triggeredAt: {
+          gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30),
+        },
+      },
+      _sum: {
+        costEstimate: true,
+      },
+    }),
   ]);
 
   const connectorStatuses = connectorCatalog.map((connector) => {
@@ -85,6 +98,7 @@ export async function getWorkspaceDashboard(workspaceId: string) {
       runs,
       pendingApprovals,
       connectors: credentials.filter((item) => item.status === "ACTIVE").length,
+      estimatedSpend30d: spend._sum.costEstimate?.toNumber() ?? 0,
     },
     setupChecklist: [
       {

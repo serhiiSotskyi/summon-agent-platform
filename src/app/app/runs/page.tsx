@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { getCurrentUserContext } from "@/lib/app/context";
-import { formatRelativeTime } from "@/lib/app/format";
+import { formatRelativeTime, formatUsd } from "@/lib/app/format";
 import { getDb } from "@/lib/db";
 
 type SearchParams = Promise<{ workspace?: string }>;
@@ -53,6 +53,7 @@ export default async function RunsPage({
                   <TH>Status</TH>
                   <TH>Trigger</TH>
                   <TH>Started</TH>
+                  <TH>Cost</TH>
                   <TH>By</TH>
                 </TR>
               </THead>
@@ -72,6 +73,9 @@ export default async function RunsPage({
                     </TD>
                     <TD>{run.triggerType.toLowerCase()}</TD>
                     <TD>{formatRelativeTime(run.triggeredAt)}</TD>
+                    <TD>
+                      {run.costEstimate ? formatUsd(run.costEstimate.toNumber()) : "Unknown"}
+                    </TD>
                     <TD>{run.triggeredBy?.name ?? run.triggeredBy?.email ?? "System"}</TD>
                   </TR>
                 ))}

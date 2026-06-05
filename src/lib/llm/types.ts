@@ -6,10 +6,19 @@ export type GenerateTextRequest = {
   model?: string;
 };
 
+export type LlmUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  raw?: unknown;
+};
+
 export type GenerateTextResult = {
   provider: LlmProvider;
   model: string;
   text: string;
+  usage?: LlmUsage;
+  estimatedCostUsd?: number | null;
 };
 
 export type LlmClient = {

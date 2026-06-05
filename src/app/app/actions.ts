@@ -1,16 +1,25 @@
 "use server";
 
-import type {
-  ActionPermissionMode,
-  ApprovalStatus,
-  DeliveryPermissionMode,
-  MembershipRole,
+import {
   Prisma,
-  TriggerType,
+  type ActionPermissionMode,
+  type ApprovalStatus,
+  type DeliveryPermissionMode,
+  type MembershipRole,
+  type TriggerType,
 } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createManualAgentRun } from "@/lib/agents/runs";
+import {
+  registerAgentScheduler,
+  removeAgentScheduler,
+} from "@/lib/agents/scheduler";
+import {
+  buildScheduleConfig,
+  readScheduleConfig,
+  withAgentSchedulerId,
+} from "@/lib/agents/schedules";
 import {
   canCreateAgent,
   canManageWorkspace,
@@ -45,6 +54,52 @@ function asJsonObject(value: unknown): Prisma.InputJsonObject {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Prisma.InputJsonObject)
     : {};
+}
+
+function selectedConnectorTools(formData: FormData) {
+  const selectedConnectors = formData
+    .getAll("tools")
+    .filter((value): value is string => typeof value === "string");
+
+  return selectedConnectors.length > 0
+    ? selectedConnectors
+    : connectorCatalog.slice(0, 2).map((connector) => connector.key);
+}
+
+function triggerConfigFromFormData(formData: FormData, agentId?: string) {
+  const triggerInput = getText(formData, "triggerType", "MANUAL");
+  const triggerType: TriggerType =
+    triggerInput === "SCHEDULED" ? "SCHEDULED" : "MANUAL";
+
+  if (triggerType !== "SCHEDULED") {
+    return {
+      triggerType,
+      triggerConfig: undefined,
+    };
+  }
+
+  const schedule = buildScheduleConfig({
+    frequency: getText(formData, "scheduleFrequency", "DAILY"),
+    timezone: getText(formData, "scheduleTimezone", "Europe/London"),
+    minute: getText(formData, "scheduleMinute", "0"),
+    timeOfDay: getText(formData, "scheduleTimeOfDay", "09:00"),
+    weekday: getText(formData, "scheduleWeekday", "1"),
+    agentId,
+  });
+
+  return {
+    triggerType,
+    triggerConfig: schedule as unknown as Prisma.InputJsonObject,
+  };
+}
+
+function agentPromptFromForm(prompt: string) {
+  return [
+    "You are a Summon workspace agent for non-technical team members.",
+    "Use connected tools carefully, explain proposed actions clearly, and request approval for protected changes.",
+    "",
+    `User objective: ${prompt}`,
+  ].join("\n");
 }
 
 function redirectToWorkspaces(
@@ -234,7 +289,8 @@ export async function createAgentDraft(formData: FormData) {
   const providerInput = getText(formData, "llmProvider", "openai");
   const llmProvider = llmProviderSchema.parse(providerInput);
   const llmModel = getText(formData, "llmModel", "gpt-4.1");
-  const triggerType = getText(formData, "triggerType", "MANUAL") as TriggerType;
+  const intent = getText(formData, "intent", "draft");
+  const requestedStatus = intent === "activate" ? "ACTIVE" : "DRAFT";
   const actionPermissionMode = getText(
     formData,
     "actionPermissionMode",
@@ -245,13 +301,10 @@ export async function createAgentDraft(formData: FormData) {
     "deliveryPermissionMode",
     "ASK_BEFORE_SENDING",
   ) as DeliveryPermissionMode;
-  const selectedConnectors = formData
-    .getAll("tools")
-    .filter((value): value is string => typeof value === "string");
-  const connectorTools =
-    selectedConnectors.length > 0
-      ? selectedConnectors
-      : connectorCatalog.slice(0, 2).map((connector) => connector.key);
+  const connectorTools = selectedConnectorTools(formData);
+  const trigger = triggerConfigFromFormData(formData);
+  const activateScheduledAgent =
+    requestedStatus === "ACTIVE" && trigger.triggerType === "SCHEDULED";
 
   const agent = await getDb().agent.create({
     data: {
@@ -262,19 +315,11 @@ export async function createAgentDraft(formData: FormData) {
         "description",
         "Draft agent created from a plain-English prompt.",
       ),
-      systemPrompt: [
-        "You are a Summon workspace agent for non-technical team members.",
-        "Use connected tools carefully, explain proposed actions clearly, and request approval for protected changes.",
-        "",
-        `User objective: ${prompt}`,
-      ].join("\n"),
+      systemPrompt: agentPromptFromForm(prompt),
       tools: connectorTools,
-      triggerType,
-      triggerConfig:
-        triggerType === "SCHEDULED"
-          ? { schedule: getText(formData, "schedule", "Every Monday at 9am") }
-          : undefined,
-      status: "DRAFT",
+      triggerType: trigger.triggerType,
+      triggerConfig: trigger.triggerConfig ?? undefined,
+      status: activateScheduledAgent ? "DRAFT" : requestedStatus,
       llmProvider,
       llmModel,
       actionPermissionMode,
@@ -283,8 +328,218 @@ export async function createAgentDraft(formData: FormData) {
     },
   });
 
+  if (trigger.triggerType === "SCHEDULED" && trigger.triggerConfig) {
+    const schedule = withAgentSchedulerId(
+      readScheduleConfig(trigger.triggerConfig) ?? buildScheduleConfig({ frequency: "DAILY" }),
+      agent.id,
+    );
+    const updatedAgent = await getDb().agent.update({
+      where: { id: agent.id },
+      data: {
+        triggerConfig: schedule as unknown as Prisma.InputJsonObject,
+      },
+    });
+
+    if (requestedStatus === "ACTIVE") {
+      await registerAgentScheduler({
+        ...updatedAgent,
+        status: "ACTIVE",
+      });
+      await getDb().agent.update({
+        where: { id: agent.id },
+        data: { status: "ACTIVE" },
+      });
+    }
+  }
+
   revalidatePath("/app", "layout");
-  redirect(`/app/agents/${agent.id}`);
+  redirect(`/app/agents/${agent.id}?workspace=${context.workspace.id}`);
+}
+
+export async function createAgentAndMaybeActivate(formData: FormData) {
+  return createAgentDraft(formData);
+}
+
+export async function activateAgent(formData: FormData) {
+  const agentId = getText(formData, "agentId");
+  const workspaceId = getText(formData, "workspaceId");
+  const context = await requireContext(workspaceId);
+
+  if (!canCreateAgent(context.role)) {
+    throw new Error("You do not have permission to activate agents.");
+  }
+
+  const agent = await getDb().agent.findFirst({
+    where: {
+      id: agentId,
+      workspaceId: context.workspace.id,
+      status: { not: "DELETED" },
+    },
+  });
+
+  if (!agent) {
+    throw new Error("Agent not found.");
+  }
+
+  let triggerConfig: Prisma.InputJsonValue | undefined;
+  if (agent.triggerType === "SCHEDULED") {
+    const schedule =
+      readScheduleConfig(agent.triggerConfig) ??
+      buildScheduleConfig({ frequency: "DAILY", agentId: agent.id });
+    triggerConfig = withAgentSchedulerId(
+      schedule,
+      agent.id,
+    ) as unknown as Prisma.InputJsonObject;
+  }
+
+  if (agent.triggerType === "SCHEDULED") {
+    await registerAgentScheduler({
+      ...agent,
+      status: "ACTIVE",
+      triggerConfig:
+        (triggerConfig as unknown as Prisma.JsonValue | undefined) ??
+        agent.triggerConfig,
+    });
+  } else {
+    await removeAgentScheduler(agent.id);
+  }
+
+  await getDb().agent.update({
+    where: { id: agent.id },
+    data: {
+      status: "ACTIVE",
+      triggerConfig:
+        agent.triggerType === "SCHEDULED"
+          ? triggerConfig
+          : agent.triggerConfig ?? undefined,
+    },
+  });
+  revalidatePath("/app", "layout");
+  redirect(`/app/agents/${agent.id}?workspace=${context.workspace.id}`);
+}
+
+export async function pauseAgent(formData: FormData) {
+  const agentId = getText(formData, "agentId");
+  const workspaceId = getText(formData, "workspaceId");
+  const context = await requireContext(workspaceId);
+
+  if (!canCreateAgent(context.role)) {
+    throw new Error("You do not have permission to pause agents.");
+  }
+
+  const agent = await getDb().agent.findFirst({
+    where: {
+      id: agentId,
+      workspaceId: context.workspace.id,
+      status: { not: "DELETED" },
+    },
+  });
+
+  if (!agent) {
+    throw new Error("Agent not found.");
+  }
+
+  await removeAgentScheduler(agent.id);
+
+  const updatedAgent = await getDb().agent.update({
+    where: { id: agent.id },
+    data: { status: "PAUSED" },
+  });
+
+  revalidatePath("/app", "layout");
+  redirect(`/app/agents/${updatedAgent.id}?workspace=${context.workspace.id}`);
+}
+
+export async function updateAgentConfig(formData: FormData) {
+  const agentId = getText(formData, "agentId");
+  const workspaceId = getText(formData, "workspaceId");
+  const context = await requireContext(workspaceId);
+
+  if (!canCreateAgent(context.role)) {
+    throw new Error("You do not have permission to edit agents.");
+  }
+
+  const existingAgent = await getDb().agent.findFirst({
+    where: {
+      id: agentId,
+      workspaceId: context.workspace.id,
+      status: { not: "DELETED" },
+    },
+  });
+
+  if (!existingAgent) {
+    throw new Error("Agent not found.");
+  }
+
+  const prompt = getText(formData, "prompt");
+  const trigger = triggerConfigFromFormData(formData, existingAgent.id);
+  const providerInput = getText(formData, "llmProvider", existingAgent.llmProvider);
+  const llmProvider = llmProviderSchema.parse(providerInput);
+  const llmModel = getText(formData, "llmModel", existingAgent.llmModel);
+
+  const updateData = {
+    name: getText(formData, "name", existingAgent.name),
+    description: getText(
+      formData,
+      "description",
+      existingAgent.description ?? "Workspace agent.",
+    ),
+    systemPrompt: prompt
+      ? agentPromptFromForm(prompt)
+      : getText(formData, "systemPrompt", existingAgent.systemPrompt),
+    tools: selectedConnectorTools(formData),
+    triggerType: trigger.triggerType,
+    triggerConfig: trigger.triggerConfig ?? Prisma.DbNull,
+    llmProvider,
+    llmModel,
+    actionPermissionMode: getText(
+      formData,
+      "actionPermissionMode",
+      existingAgent.actionPermissionMode,
+    ) as ActionPermissionMode,
+    deliveryPermissionMode: getText(
+      formData,
+      "deliveryPermissionMode",
+      existingAgent.deliveryPermissionMode,
+    ) as DeliveryPermissionMode,
+  };
+
+  let schedulerChanged = false;
+
+  try {
+    if (existingAgent.status === "ACTIVE") {
+      if (trigger.triggerType === "SCHEDULED") {
+        await registerAgentScheduler({
+          ...existingAgent,
+          ...updateData,
+          status: "ACTIVE",
+          triggerType: "SCHEDULED",
+          triggerConfig: trigger.triggerConfig as unknown as Prisma.JsonValue,
+        });
+      } else {
+        await removeAgentScheduler(existingAgent.id);
+      }
+      schedulerChanged = true;
+    }
+
+    const updatedAgent = await getDb().agent.update({
+      where: { id: existingAgent.id },
+      data: updateData,
+    });
+
+    revalidatePath("/app", "layout");
+    redirect(`/app/agents/${updatedAgent.id}?workspace=${context.workspace.id}`);
+  } catch (error) {
+    if (schedulerChanged) {
+      await registerAgentScheduler(existingAgent).catch(() => undefined);
+    }
+
+    throw error;
+  }
+}
+
+export async function updateAgentSchedule(formData: FormData) {
+  return updateAgentConfig(formData);
 }
 
 export async function createManualRun(formData: FormData) {
