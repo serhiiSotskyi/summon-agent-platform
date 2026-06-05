@@ -11,6 +11,7 @@ import {
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createManualAgentRun } from "@/lib/agents/runs";
+import { SUMMON_MEMORY_SYSTEM_INSTRUCTION } from "@/lib/agents/defaults";
 import {
   registerAgentScheduler,
   removeAgentScheduler,
@@ -34,6 +35,7 @@ import { createWorkspaceWithOwnerMembership } from "@/lib/app/workspaces";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
 import { llmProviderSchema } from "@/lib/env";
+import { enqueueApprovedAction } from "@/lib/queue/agent-runs";
 
 function requireContext(workspaceId?: string) {
   return getCurrentUserContext(workspaceId).then((context) => {
@@ -97,6 +99,7 @@ function agentPromptFromForm(prompt: string) {
   return [
     "You are a Summon workspace agent for non-technical team members.",
     "Use connected tools carefully, explain proposed actions clearly, and request approval for protected changes.",
+    SUMMON_MEMORY_SYSTEM_INSTRUCTION,
     "",
     `User objective: ${prompt}`,
   ].join("\n");
@@ -632,6 +635,42 @@ export async function updateApprovalStatus(formData: FormData) {
       });
     }
   });
+
+  if (status === "APPROVED") {
+    try {
+      await enqueueApprovedAction({
+        kind: "approved-action",
+        approvalRequestId: approval.id,
+        workspaceId: context.workspace.id,
+        reviewedById: context.user.id,
+        agentRunId: approval.agentRunId,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Approved action could not be queued.";
+
+      if (approval.agentRunId) {
+        await db.agentRun.update({
+          where: { id: approval.agentRunId },
+          data: {
+            summary: "Protected action approved, but execution queueing failed.",
+            output: {
+              ...asJsonObject(approval.agentRun?.output),
+              approvedActionQueueError: {
+                approvalRequestId: approval.id,
+                message,
+                recordedAt: new Date().toISOString(),
+              },
+            },
+          },
+        });
+      }
+
+      throw new Error(`Approval was recorded, but execution could not be queued: ${message}`);
+    }
+  }
 
   revalidatePath("/app/approvals");
   revalidatePath("/app/runs");

@@ -1,4 +1,4 @@
-import { auth } from "@clerk/nextjs/server";
+import { auth, clerkClient } from "@clerk/nextjs/server";
 import type { MembershipRole, User, Workspace } from "@prisma/client";
 import { getDb } from "@/lib/db";
 import {
@@ -44,12 +44,58 @@ function getClaim(claims: Claims | undefined, keys: string[]) {
   return undefined;
 }
 
-function getUserEmail(clerkUserId: string, claims: Claims | undefined) {
-  const email =
-    getClaim(claims, ["email", "primary_email_address", "email_address"]) ??
-    `${clerkUserId}@clerk.local`;
+function getFallbackUserEmail(clerkUserId: string) {
+  return `${clerkUserId}@clerk.local`.toLowerCase();
+}
 
-  return email.toLowerCase();
+function getClaimUserEmail(claims: Claims | undefined) {
+  const email = getClaim(claims, [
+    "email",
+    "primary_email",
+    "primary_email_address",
+    "email_address",
+  ]);
+
+  return email?.toLowerCase();
+}
+
+function isPlaceholderEmail(email: string | null | undefined) {
+  return Boolean(email?.endsWith("@clerk.local"));
+}
+
+async function getClerkUserProfile(clerkUserId: string, claims: Claims | undefined) {
+  const claimEmail = getClaimUserEmail(claims);
+  const claimName = getUserName(claims);
+
+  if (claimEmail && !isPlaceholderEmail(claimEmail)) {
+    return {
+      email: claimEmail,
+      name: claimName,
+    };
+  }
+
+  try {
+    const client = await clerkClient();
+    const clerkUser = await client.users.getUser(clerkUserId);
+    const email =
+      clerkUser.primaryEmailAddress?.emailAddress ??
+      clerkUser.emailAddresses[0]?.emailAddress;
+    const name =
+      [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ") ||
+      clerkUser.fullName ||
+      clerkUser.username ||
+      claimName;
+
+    return {
+      email: email?.toLowerCase(),
+      name: name || undefined,
+    };
+  } catch {
+    return {
+      email: claimEmail,
+      name: claimName,
+    };
+  }
 }
 
 function getUserName(claims: Claims | undefined) {
@@ -65,8 +111,13 @@ function getUserName(claims: Claims | undefined) {
 
 async function ensureDbUser(clerkUserId: string, claims: Claims | undefined) {
   const db = getDb();
-  const email = getUserEmail(clerkUserId, claims);
-  const name = getUserName(claims);
+  const existing = await db.user.findUnique({ where: { clerkUserId } });
+  const profile = await getClerkUserProfile(clerkUserId, claims);
+  const email =
+    profile.email ??
+    existing?.email ??
+    getFallbackUserEmail(clerkUserId);
+  const name = profile.name ?? existing?.name;
 
   return db.user.upsert({
     where: { clerkUserId },

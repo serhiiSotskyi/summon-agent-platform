@@ -1,5 +1,8 @@
 import { Prisma } from "@prisma/client";
-import { getRetainedUntil } from "@/lib/agents/defaults";
+import {
+  getRetainedUntil,
+  SUMMON_MEMORY_SYSTEM_INSTRUCTION,
+} from "@/lib/agents/defaults";
 import { canRunAgent } from "@/lib/app/permissions";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { collectReadOnlyConnectorContext } from "@/lib/connectors/read-only";
@@ -8,8 +11,8 @@ import { llmProviderSchema } from "@/lib/env";
 import { createLlmClient } from "@/lib/llm";
 import { getPricingMetadata } from "@/lib/llm/pricing";
 import {
-  getAgentRunQueue,
-  MANUAL_RUN_JOB_NAME,
+  enqueueManualRun,
+  type ApprovedActionJob,
   type ManualAgentRunJob,
 } from "@/lib/queue/agent-runs";
 
@@ -32,6 +35,12 @@ function normalizeTools(tools: Prisma.JsonValue) {
   }
 
   return tools.filter((tool): tool is string => typeof tool === "string");
+}
+
+function asJsonObject(value: unknown): Prisma.InputJsonObject {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Prisma.InputJsonObject)
+    : {};
 }
 
 function connectorName(key: string) {
@@ -226,7 +235,7 @@ export async function createManualAgentRun(input: CreateManualAgentRunInput) {
   });
 
   try {
-    await getAgentRunQueue().add(MANUAL_RUN_JOB_NAME, {
+    await enqueueManualRun({
       kind: "manual-run",
       agentId: agent.id,
       agentRunId: run.id,
@@ -252,7 +261,7 @@ export async function createScheduledAgentRun(input: CreateScheduledAgentRunInpu
 
   return db.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.agentId}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.agentId}))`;
 
       const agent = await tx.agent.findFirst({
         where: {
@@ -338,7 +347,10 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
     const provider = llmProviderSchema.catch("openai").parse(run.agent.llmProvider);
     const result = await withTimeout(
       createLlmClient(provider).generateText({
-        systemPrompt: run.agent.systemPrompt,
+        systemPrompt: [
+          SUMMON_MEMORY_SYSTEM_INSTRUCTION,
+          run.agent.systemPrompt,
+        ].join("\n\n"),
         model: run.agent.llmModel,
         prompt: buildReadOnlyRunPrompt({
           agentName: run.agent.name,
@@ -406,4 +418,57 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       },
     });
   }
+}
+
+export async function executeApprovedAction(job: ApprovedActionJob) {
+  const db = getDb();
+  const approval = await db.approvalRequest.findFirst({
+    where: {
+      id: job.approvalRequestId,
+      workspaceId: job.workspaceId,
+      status: "APPROVED",
+    },
+    include: {
+      agentRun: true,
+    },
+  });
+
+  if (!approval) {
+    return null;
+  }
+
+  const executedAt = new Date();
+  const executionRecord: Prisma.InputJsonObject = {
+    approvalRequestId: approval.id,
+    status: "COMPLETED",
+    executedAt: executedAt.toISOString(),
+    executedBy: "agent-approved-actions-worker",
+    reviewedById: job.reviewedById,
+    mode: "approval_record_only",
+    message:
+      "Approval execution completed in record-only mode. No external write connector handled this action.",
+  };
+
+  if (!approval.agentRun) {
+    return db.approvalRequest.update({
+      where: { id: approval.id },
+      data: {
+        requestedAction: {
+          ...asJsonObject(approval.requestedAction),
+          execution: executionRecord,
+        },
+      },
+    });
+  }
+
+  return db.agentRun.update({
+    where: { id: approval.agentRun.id },
+    data: {
+      summary: "Protected action approval was executed in record-only mode.",
+      output: {
+        ...asJsonObject(approval.agentRun.output),
+        approvedActionExecution: executionRecord,
+      },
+    },
+  });
 }
