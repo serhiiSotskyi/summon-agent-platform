@@ -126,7 +126,7 @@ async function main() {
 
   console.log(`[agent-runs] synced ${count} active scheduled agent${count === 1 ? "" : "s"}`);
   console.log(
-    `[agent-runs] worker ready (queue=${AGENT_RUN_QUEUE_NAME}, backend=pg-boss, mode=read-only, pid=${process.pid})`,
+    `[agent-runs] worker ready (queue=${AGENT_RUN_QUEUE_NAME}, backend=pg-boss, mode=tool-loop, pid=${process.pid})`,
   );
 }
 
