@@ -1,4 +1,4 @@
-import { Bot, Rocket, ShieldCheck } from "lucide-react";
+import { Bot, FileUp, Link2, Rocket, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,11 @@ export default async function NewAgentPage({
         title="New agent"
       />
 
-      <form action={createAgentDraft} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+      <form
+        action={createAgentDraft}
+        className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]"
+        encType="multipart/form-data"
+      >
         <input name="workspaceId" type="hidden" value={context.workspace.id} />
         <Card>
           <CardHeader>
@@ -77,6 +81,88 @@ export default async function NewAgentPage({
                   <option value="MANUAL">Manual</option>
                   <option value="SCHEDULED">Scheduled</option>
                 </Select>
+              </div>
+            </div>
+            <div className="space-y-4 rounded-md border border-white/10 bg-black/20 p-4">
+              <div>
+                <p className="flex items-center gap-2 text-sm font-medium text-white">
+                  <Link2 aria-hidden className="size-4 text-emerald-200" />
+                  Files and references
+                </p>
+                <p className="mt-1 text-sm leading-6 text-zinc-500">
+                  Attach the inputs this agent should use: templates, Drive or
+                  Notion links, exported CSVs, or helper Python. Large Google
+                  files should be added as links.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
+                <div className="space-y-2">
+                  <Label htmlFor="referenceUrl">Reference URL</Label>
+                  <Input
+                    id="referenceUrl"
+                    name="referenceUrl"
+                    placeholder="Google Slides, Sheets, Drive, Notion, or Looker Studio URL"
+                    type="url"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="referenceRole">Role</Label>
+                  <Select id="referenceRole" name="referenceRole" defaultValue="reference">
+                    <option value="template">Template</option>
+                    <option value="input_data">Input data</option>
+                    <option value="helper_code">Helper code</option>
+                    <option value="reference">Reference</option>
+                    <option value="output_destination">Output destination</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="referenceName">Reference name</Label>
+                  <Input
+                    id="referenceName"
+                    name="referenceName"
+                    placeholder="Optional label, e.g. quarterly report template"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="referenceDescription">Reference notes</Label>
+                  <Input
+                    id="referenceDescription"
+                    name="referenceDescription"
+                    placeholder="Optional instruction for this file"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
+                <div className="space-y-2">
+                  <Label htmlFor="agentFiles">Upload small text files</Label>
+                  <Input
+                    id="agentFiles"
+                    multiple
+                    name="agentFiles"
+                    type="file"
+                    accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
+                  />
+                  <p className="text-xs leading-5 text-zinc-500">
+                    CSV, Python, TXT, Markdown, JSON, or YAML up to 1 MB each.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="uploadedFileRole">Upload role</Label>
+                  <Select
+                    id="uploadedFileRole"
+                    name="uploadedFileRole"
+                    defaultValue="input_data"
+                  >
+                    <option value="input_data">Input data</option>
+                    <option value="helper_code">Helper code</option>
+                    <option value="template">Template</option>
+                    <option value="reference">Reference</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </div>
               </div>
             </div>
             <div className="space-y-3 rounded-md border border-white/10 bg-black/20 p-4">
@@ -180,14 +266,21 @@ export default async function NewAgentPage({
                 />
                 <span>
                   <span className="block font-medium text-white">
-                    QBR deck generation
+                    Report/deck generation tool
                   </span>
                   <span className="mt-1 block leading-5 text-emerald-100/80">
-                    Run approved Python metrics code, generate a PPTX, import it
-                    as Google Slides, and add the result to Notion memory.
+                    Uses attached CSV, helper code, and template references to
+                    generate report artifacts. It should not rely on hardcoded
+                    client files.
                   </span>
                 </span>
               </label>
+              <Alert>
+                <FileUp aria-hidden className="mb-2 size-4" />
+                Report generation is one optional tool. The agent still needs
+                files or references attached above so it knows what to calculate
+                and which template to copy.
+              </Alert>
             </CardContent>
           </Card>
 

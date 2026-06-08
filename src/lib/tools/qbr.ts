@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Prisma, type Agent } from "@prisma/client";
+import { Prisma, type Agent, type AgentFile } from "@prisma/client";
 import { runQbrMetricsCompile, runQbrReport } from "../../../sandbox/qbr/executor";
 import { createNotionMemoryPageFromRunArtifacts, importPptxAsGoogleSlides } from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
@@ -10,15 +10,28 @@ import { getEnv } from "@/lib/env";
 
 export const QBR_GENERATE_DECK_TOOL = "qbr.generateDeck";
 
-const DEFAULT_WENDY_WU_CSV =
-  "/Users/sergeysotskiy/Downloads/Wendy Wu Weekly Report - GA4 - New_Untitled page_Table (4).csv";
 const DEFAULT_REFERENCE_DECK_URL =
   "https://docs.google.com/presentation/d/1ctx-YpaHfYTJ-sJgWW_BGUTtbeLiEU7xF2JX76CkNkw";
 
 type QbrAgent = Pick<
   Agent,
   "id" | "name" | "description" | "systemPrompt" | "tools"
->;
+> & {
+  files?: Array<
+    Pick<
+      AgentFile,
+      | "name"
+      | "description"
+      | "role"
+      | "sourceType"
+      | "url"
+      | "originalFileName"
+      | "mimeType"
+      | "contentText"
+      | "sizeBytes"
+    >
+  >;
+};
 
 type QbrManifest = {
   status: "ok";
@@ -86,30 +99,53 @@ function arrayTools(tools: Prisma.JsonValue) {
 
 export function agentWantsQbrTool(agent: QbrAgent) {
   const tools = arrayTools(agent.tools);
-  if (tools.includes(QBR_GENERATE_DECK_TOOL)) {
-    return true;
-  }
-
-  const text = [agent.name, agent.description, agent.systemPrompt]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  return /\b(qbr|quarterly|deck|slides|presentation)\b/.test(text);
+  return tools.includes(QBR_GENERATE_DECK_TOOL);
 }
 
-function getDefaultCsvPath() {
+async function resolveQbrInputCsv(agent: QbrAgent, outputDir: string) {
+  const attachedCsv = agent.files?.find((file) => {
+    const name = [file.originalFileName, file.name].filter(Boolean).join(" ").toLowerCase();
+    return (
+      file.role === "input_data" &&
+      (name.endsWith(".csv") || file.mimeType === "text/csv")
+    );
+  });
+
+  if (attachedCsv?.sourceType === "uploaded_text" && attachedCsv.contentText) {
+    const fileName = attachedCsv.originalFileName ?? attachedCsv.name;
+    const csvPath = path.join(outputDir, fileName.endsWith(".csv") ? fileName : "agent_input.csv");
+    await writeFile(csvPath, attachedCsv.contentText, "utf8");
+    return csvPath;
+  }
+
   const configured = getEnv("QBR_DEFAULT_CSV_PATH");
   if (configured && existsSync(configured)) {
     return configured;
   }
 
-  if (existsSync(DEFAULT_WENDY_WU_CSV)) {
-    return DEFAULT_WENDY_WU_CSV;
+  if (attachedCsv?.url) {
+    throw new Error(
+      "QBR input data is attached as a URL. Upload the exported CSV as a small text file for this tool, or add a Drive/Sheets reader step before qbr.generateDeck.",
+    );
   }
 
   throw new Error(
-    "QBR input CSV was not found. Set QBR_DEFAULT_CSV_PATH or provide a run-owned CSV source before running qbr.generateDeck.",
+    "QBR input CSV was not found. Attach a CSV file to the agent or set QBR_DEFAULT_CSV_PATH for trusted development runs.",
+  );
+}
+
+function getReferenceDeckUrl(agent: QbrAgent) {
+  const attachedTemplate = agent.files?.find(
+    (file) =>
+      file.role === "template" &&
+      file.url &&
+      /docs\.google\.com\/presentation/.test(file.url),
+  );
+
+  return (
+    attachedTemplate?.url ??
+    getEnv("QBR_REFERENCE_DECK_URL") ??
+    DEFAULT_REFERENCE_DECK_URL
   );
 }
 
@@ -120,6 +156,36 @@ function getReportPeriod() {
     reportYear: Number.isFinite(year) ? year : 2026,
     reportQuarter: ([1, 2, 3, 4].includes(quarter) ? quarter : 1) as 1 | 2 | 3 | 4,
   };
+}
+
+function getQbrClientId(agent: QbrAgent) {
+  const configured = getEnv("QBR_CLIENT_ID");
+  if (configured) {
+    return configured;
+  }
+
+  const contextText = [
+    agent.name,
+    agent.description,
+    agent.systemPrompt,
+    ...(agent.files ?? []).flatMap((file) => [
+      file.name,
+      file.description,
+      file.originalFileName,
+      file.url,
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (contextText.includes("wendy wu")) {
+    return "wendy_wu";
+  }
+
+  throw new Error(
+    "QBR client profile was not found. Set QBR_CLIENT_ID or attach/name the agent inputs with a supported client profile such as Wendy Wu.",
+  );
 }
 
 async function fileMetadata(filePath: string) {
@@ -252,7 +318,6 @@ export async function executeQbrGenerateDeckTool(input: {
 }): Promise<QbrToolOutput> {
   const db = getDb();
   const startedAt = Date.now();
-  const csvPath = getDefaultCsvPath();
   const reportPeriod = getReportPeriod();
   const outputDir = path.join(
     os.tmpdir(),
@@ -261,6 +326,9 @@ export async function executeQbrGenerateDeckTool(input: {
     "qbr",
   );
   await mkdir(outputDir, { recursive: true });
+  const csvPath = await resolveQbrInputCsv(input.agent, outputDir);
+  const referenceDeckUrl = getReferenceDeckUrl(input.agent);
+  const clientId = getQbrClientId(input.agent);
 
   const toolCall = await db.toolCall.create({
     data: {
@@ -272,11 +340,11 @@ export async function executeQbrGenerateDeckTool(input: {
       request: {
         action: "generate_qbr_deck",
         parameters: {
-          clientId: "wendy_wu",
+          clientId,
           csvPath,
           outputDir,
           ...reportPeriod,
-          referenceDeckUrl: DEFAULT_REFERENCE_DECK_URL,
+          referenceDeckUrl,
         },
       },
       metadata: {
@@ -292,7 +360,8 @@ export async function executeQbrGenerateDeckTool(input: {
       inputCsv: csvPath,
       outputDir,
       calculationJson: "qbr_calculation_blueprint.json",
-      clientId: "wendy_wu",
+      clientId,
+      referenceDeckUrl,
       python: getEnv("QBR_PYTHON_BIN") ?? getEnv("PYTHON_BIN") ?? "python3",
       ...reportPeriod,
     });
@@ -307,9 +376,9 @@ export async function executeQbrGenerateDeckTool(input: {
     const result = await runQbrReport({
       inputCsv: csvPath,
       outputDir,
-      outputPptx: "wendy_wu_qbr.pptx",
+      outputPptx: `${clientId}_qbr.pptx`,
       outputJson: "metrics.json",
-      clientId: "wendy_wu",
+      clientId,
       python: getEnv("QBR_PYTHON_BIN") ?? getEnv("PYTHON_BIN") ?? "python3",
       ...reportPeriod,
     });
@@ -469,7 +538,7 @@ export async function executeQbrGenerateDeckTool(input: {
     return {
       mode: "tool_execution",
       toolName: QBR_GENERATE_DECK_TOOL,
-      referenceDeckUrl: DEFAULT_REFERENCE_DECK_URL,
+      referenceDeckUrl,
       manifest,
       calculationBlueprint,
       googleSlides,
@@ -481,7 +550,7 @@ export async function executeQbrGenerateDeckTool(input: {
           toolName: QBR_GENERATE_DECK_TOOL,
           status: "SUCCEEDED",
           summary: qbrRunSummary(manifest, blockers),
-          args: { csvPath, clientId: "wendy_wu", ...reportPeriod },
+          args: { csvPath, clientId, ...reportPeriod },
           result: {
             metrics: manifest.metrics,
             quarter: manifest.quarter,

@@ -1,4 +1,4 @@
-import { ArrowLeft, Save } from "lucide-react";
+import { ArrowLeft, FileUp, Link2, Save } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
@@ -74,7 +74,11 @@ export default async function EditAgentPage({
         title={`Edit ${agent.name}`}
       />
 
-      <form action={updateAgentConfig} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+      <form
+        action={updateAgentConfig}
+        className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_390px]"
+        encType="multipart/form-data"
+      >
         <input name="agentId" type="hidden" value={agent.id} />
         <input name="workspaceId" type="hidden" value={context.workspace.id} />
 
@@ -128,6 +132,93 @@ export default async function EditAgentPage({
                   <option value="SCHEDULED">Scheduled</option>
                 </Select>
               </div>
+            </div>
+
+            <div className="space-y-4 rounded-md border border-white/10 bg-black/20 p-4">
+              <div>
+                <p className="flex items-center gap-2 text-sm font-medium text-white">
+                  <Link2 aria-hidden className="size-4 text-emerald-200" />
+                  Add files and references
+                </p>
+                <p className="mt-1 text-sm leading-6 text-zinc-500">
+                  Add new template links, source data, helper code, or reference
+                  files. Existing files are shown on the agent detail page.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
+                <div className="space-y-2">
+                  <Label htmlFor="referenceUrl">Reference URL</Label>
+                  <Input
+                    id="referenceUrl"
+                    name="referenceUrl"
+                    placeholder="Google Slides, Sheets, Drive, Notion, or Looker Studio URL"
+                    type="url"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="referenceRole">Role</Label>
+                  <Select id="referenceRole" name="referenceRole" defaultValue="reference">
+                    <option value="template">Template</option>
+                    <option value="input_data">Input data</option>
+                    <option value="helper_code">Helper code</option>
+                    <option value="reference">Reference</option>
+                    <option value="output_destination">Output destination</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="referenceName">Reference name</Label>
+                  <Input
+                    id="referenceName"
+                    name="referenceName"
+                    placeholder="Optional label"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="referenceDescription">Reference notes</Label>
+                  <Input
+                    id="referenceDescription"
+                    name="referenceDescription"
+                    placeholder="Optional instruction for this file"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
+                <div className="space-y-2">
+                  <Label htmlFor="agentFiles">Upload small text files</Label>
+                  <Input
+                    id="agentFiles"
+                    multiple
+                    name="agentFiles"
+                    type="file"
+                    accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
+                  />
+                  <p className="text-xs leading-5 text-zinc-500">
+                    CSV, Python, TXT, Markdown, JSON, or YAML up to 1 MB each.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="uploadedFileRole">Upload role</Label>
+                  <Select
+                    id="uploadedFileRole"
+                    name="uploadedFileRole"
+                    defaultValue="input_data"
+                  >
+                    <option value="input_data">Input data</option>
+                    <option value="helper_code">Helper code</option>
+                    <option value="template">Template</option>
+                    <option value="reference">Reference</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </div>
+              </div>
+              <Alert>
+                <FileUp aria-hidden className="mb-2 size-4" />
+                Adding files here does not overwrite existing inputs; it adds
+                new agent-owned references.
+              </Alert>
             </div>
 
             <div className="space-y-3 rounded-md border border-white/10 bg-black/20 p-4">

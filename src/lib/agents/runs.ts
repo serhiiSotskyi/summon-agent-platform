@@ -3,6 +3,7 @@ import {
   getRetainedUntil,
   SUMMON_MEMORY_SYSTEM_INSTRUCTION,
 } from "@/lib/agents/defaults";
+import { buildAgentFilesPromptSection } from "@/lib/agents/files";
 import { canRunAgent } from "@/lib/app/permissions";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { collectReadOnlyConnectorContext } from "@/lib/connectors/read-only";
@@ -117,11 +118,13 @@ function summarizeOutput(text: string) {
 
 function buildReadOnlyRunPrompt({
   agentName,
+  agentFilesContext,
   connectorContext,
   toolExecutionContext,
   tools,
 }: {
   agentName: string;
+  agentFilesContext?: string;
   connectorContext: Awaited<ReturnType<typeof collectReadOnlyConnectorContext>>;
   toolExecutionContext?: string;
   tools: string[];
@@ -146,6 +149,8 @@ function buildReadOnlyRunPrompt({
     `Connected tools: ${connectorContext.connectedTools.map(connectorName).join(", ") || "none"}.`,
     `Missing tools: ${connectorContext.missingTools.map(connectorName).join(", ") || "none"}.`,
     "",
+    agentFilesContext ?? "",
+    agentFilesContext ? "" : "",
     toolExecutionContext ?? "",
     toolExecutionContext ? "" : "",
     "Connector evidence:",
@@ -330,7 +335,13 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
         agent: { workspaceId: job.workspaceId },
       },
       include: {
-        agent: true,
+        agent: {
+          include: {
+            files: {
+              orderBy: { createdAt: "desc" },
+            },
+          },
+        },
       },
     });
 
@@ -353,6 +364,7 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
     });
 
     const tools = normalizeTools(run.agent.tools);
+    const agentFilesContext = buildAgentFilesPromptSection(run.agent.files);
     const connectorContext = await collectReadOnlyConnectorContext({
       workspaceId: job.workspaceId,
       tools,
@@ -374,6 +386,7 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
         model: run.agent.llmModel,
         prompt: buildReadOnlyRunPrompt({
           agentName: run.agent.name,
+          agentFilesContext,
           connectorContext,
           toolExecutionContext: buildQbrPromptSection(qbrOutput),
           tools,
@@ -406,6 +419,15 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       }) as Prisma.InputJsonObject,
       text: result.text,
       requestedTools: tools,
+      agentFiles: run.agent.files.map((file) => ({
+        id: file.id,
+        name: file.name,
+        role: file.role,
+        sourceType: file.sourceType,
+        url: file.url,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+      })) as unknown as Prisma.InputJsonValue,
       connectedTools: connectorContext.connectedTools,
       missingTools: connectorContext.missingTools,
       connectorResults:

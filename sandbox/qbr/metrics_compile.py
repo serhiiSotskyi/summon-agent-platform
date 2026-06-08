@@ -47,7 +47,7 @@ from src.trends_loader import TrendsLoader
 from src.trends_metrics import summarize_trends
 
 
-REFERENCE_DECK_URL = "https://docs.google.com/presentation/d/1ctx-YpaHfYTJ-sJgWW_BGUTtbeLiEU7xF2JX76CkNkw"
+DEFAULT_REFERENCE_DECK_URL = "https://docs.google.com/presentation/d/1ctx-YpaHfYTJ-sJgWW_BGUTtbeLiEU7xF2JX76CkNkw"
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trends-dir", default=None, help="Optional directory with Google Trends CSV exports.")
     parser.add_argument("--report-year", type=int, default=None, help="Explicit report year, e.g. 2026.")
     parser.add_argument("--report-quarter", type=int, choices=[1, 2, 3, 4], default=None, help="Explicit report quarter.")
+    parser.add_argument(
+        "--reference-deck-url",
+        default=DEFAULT_REFERENCE_DECK_URL,
+        help="Google Slides reference/template deck URL for the downstream renderer.",
+    )
     parser.add_argument("--max-scope-count", type=int, default=24, help="Cap campaign/destination scopes in output.")
     return parser.parse_args()
 
@@ -526,7 +531,7 @@ def build_payload(args: argparse.Namespace) -> Dict[str, Any]:
         },
         "reportTitle": report_title,
         "agencyName": agency_name,
-        "referenceDeckUrl": REFERENCE_DECK_URL,
+        "referenceDeckUrl": args.reference_deck_url,
         "rowCount": len(df),
         "dateRange": {
             "min": _as_json_compatible(df["date"].min()),
@@ -534,7 +539,7 @@ def build_payload(args: argparse.Namespace) -> Dict[str, Any]:
         },
         "quarter": _as_json_compatible(quarter),
         "styleTokens": _as_json_compatible(chart_styles),
-        "rendererInstructions": _renderer_instructions(REFERENCE_DECK_URL),
+        "rendererInstructions": _renderer_instructions(args.reference_deck_url),
         "metrics": {
             "includeRevenue": report.get("include_revenue", False),
             "overall": _scope_payload("Overall", report["overall"], report["include_revenue"]),

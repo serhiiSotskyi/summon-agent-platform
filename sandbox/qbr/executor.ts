@@ -56,6 +56,7 @@ type RunOptions = {
   calculationJson?: string;
   trendsDir?: string;
   auctionCsv?: string;
+  referenceDeckUrl?: string;
   maxKpiRows?: number;
   maxScopeCount?: number;
   reportYear?: number;
@@ -271,6 +272,9 @@ export async function runQbrMetricsCompile(
   }
   if (options.auctionCsv) {
     args.push("--auction-csv", path.resolve(options.auctionCsv));
+  }
+  if (options.referenceDeckUrl) {
+    args.push("--reference-deck-url", options.referenceDeckUrl);
   }
   if (options.reportYear || options.reportQuarter) {
     if (!options.reportYear || !options.reportQuarter) {

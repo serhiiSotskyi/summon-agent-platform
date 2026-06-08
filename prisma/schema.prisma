@@ -127,6 +127,7 @@ model Workspace {
   memberships          WorkspaceMembership[]
   invitations          WorkspaceInvitation[]
   agents               Agent[]
+  agentFiles           AgentFile[]
   connectorCredentials ConnectorCredential[]
   approvalRequests     ApprovalRequest[]
 }
@@ -192,9 +193,34 @@ model Agent {
   createdBy              User                   @relation("AgentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   runs                   AgentRun[]
   approvalRequests       ApprovalRequest[]
+  files                  AgentFile[]
 
   @@index([workspaceId, status])
   @@index([createdById])
+}
+
+model AgentFile {
+  id               String    @id @default(cuid())
+  workspaceId      String
+  agentId          String
+  name             String
+  description      String?
+  role             String    @default("reference")
+  sourceType       String    @default("external_url")
+  url              String?
+  originalFileName String?
+  mimeType         String?
+  contentText      String?
+  sizeBytes        Int?
+  metadata         Json?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent            Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([agentId])
+  @@index([agentId, role])
 }
 
 model AgentRun {

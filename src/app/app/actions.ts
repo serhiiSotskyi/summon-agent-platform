@@ -12,6 +12,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createManualAgentRun } from "@/lib/agents/runs";
 import { SUMMON_MEMORY_SYSTEM_INSTRUCTION } from "@/lib/agents/defaults";
+import { attachFilesFromFormData } from "@/lib/agents/files";
 import {
   registerAgentScheduler,
   removeAgentScheduler,
@@ -331,6 +332,12 @@ export async function createAgentDraft(formData: FormData) {
     },
   });
 
+  await attachFilesFromFormData({
+    agentId: agent.id,
+    workspaceId: context.workspace.id,
+    formData,
+  });
+
   if (trigger.triggerType === "SCHEDULED" && trigger.triggerConfig) {
     const schedule = withAgentSchedulerId(
       readScheduleConfig(trigger.triggerConfig) ?? buildScheduleConfig({ frequency: "DAILY" }),
@@ -530,6 +537,12 @@ export async function updateAgentConfig(formData: FormData) {
       data: updateData,
     });
 
+    await attachFilesFromFormData({
+      agentId: updatedAgent.id,
+      workspaceId: context.workspace.id,
+      formData,
+    });
+
     revalidatePath("/app", "layout");
     redirect(`/app/agents/${updatedAgent.id}?workspace=${context.workspace.id}`);
   } catch (error) {
@@ -543,6 +556,59 @@ export async function updateAgentConfig(formData: FormData) {
 
 export async function updateAgentSchedule(formData: FormData) {
   return updateAgentConfig(formData);
+}
+
+export async function addAgentFile(formData: FormData) {
+  const agentId = getText(formData, "agentId");
+  const workspaceId = getText(formData, "workspaceId");
+  const context = await requireContext(workspaceId);
+
+  if (!canCreateAgent(context.role)) {
+    throw new Error("You do not have permission to edit agent files.");
+  }
+
+  const agent = await getDb().agent.findFirst({
+    where: {
+      id: agentId,
+      workspaceId: context.workspace.id,
+      status: { not: "DELETED" },
+    },
+  });
+
+  if (!agent) {
+    throw new Error("Agent not found.");
+  }
+
+  await attachFilesFromFormData({
+    agentId: agent.id,
+    workspaceId: context.workspace.id,
+    formData,
+  });
+
+  revalidatePath("/app", "layout");
+  redirect(`/app/agents/${agent.id}?workspace=${context.workspace.id}`);
+}
+
+export async function removeAgentFile(formData: FormData) {
+  const agentId = getText(formData, "agentId");
+  const fileId = getText(formData, "fileId");
+  const workspaceId = getText(formData, "workspaceId");
+  const context = await requireContext(workspaceId);
+
+  if (!canCreateAgent(context.role)) {
+    throw new Error("You do not have permission to edit agent files.");
+  }
+
+  await getDb().agentFile.deleteMany({
+    where: {
+      id: fileId,
+      agentId,
+      workspaceId: context.workspace.id,
+    },
+  });
+
+  revalidatePath("/app", "layout");
+  redirect(`/app/agents/${agentId}?workspace=${context.workspace.id}`);
 }
 
 export async function createManualRun(formData: FormData) {

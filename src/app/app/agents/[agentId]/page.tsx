@@ -1,4 +1,14 @@
-import { ArrowLeft, Edit, Pause, Play, Rocket } from "lucide-react";
+import {
+  ArrowLeft,
+  Edit,
+  FileText,
+  FileUp,
+  Link2,
+  Pause,
+  Play,
+  Rocket,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { EmptyState } from "@/components/app/empty-state";
@@ -7,6 +17,7 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input, Label, Select } from "@/components/ui/form";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { demoAgents } from "@/lib/app/demo";
@@ -18,7 +29,13 @@ import {
   readScheduleConfig,
 } from "@/lib/agents/schedules";
 import { getDb } from "@/lib/db";
-import { activateAgent, createManualRun, pauseAgent } from "../../actions";
+import {
+  activateAgent,
+  addAgentFile,
+  createManualRun,
+  pauseAgent,
+  removeAgentFile,
+} from "../../actions";
 
 type Params = Promise<{ agentId: string }>;
 type SearchParams = Promise<{ workspace?: string; demo?: string }>;
@@ -47,6 +64,9 @@ export default async function AgentDetailPage({
           status: { not: "DELETED" },
         },
         include: {
+          files: {
+            orderBy: { createdAt: "desc" },
+          },
           runs: {
             orderBy: { triggeredAt: "desc" },
             take: 10,
@@ -197,6 +217,188 @@ export default async function AgentDetailPage({
             ) : null}
           </CardContent>
         </Card>
+
+        {!demo ? (
+          <Card className="xl:col-span-2">
+            <CardHeader>
+              <CardTitle>Agent files</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {"files" in agent && agent.files.length > 0 ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {agent.files.map((file) => (
+                    <div
+                      className="rounded-md border border-white/10 bg-black/20 p-4"
+                      key={file.id}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <FileText
+                              aria-hidden
+                              className="size-4 text-emerald-200"
+                            />
+                            <p className="break-words text-sm font-medium text-white">
+                              {file.name}
+                            </p>
+                            <Badge>{file.role.replaceAll("_", " ")}</Badge>
+                          </div>
+                          <p className="mt-2 text-xs leading-5 text-zinc-500">
+                            {file.sourceType.replaceAll("_", " ")}
+                            {file.mimeType ? ` · ${file.mimeType}` : ""}
+                            {file.sizeBytes
+                              ? ` · ${(file.sizeBytes / 1024).toFixed(1)} KB`
+                              : ""}
+                          </p>
+                          {file.description ? (
+                            <p className="mt-2 text-sm leading-6 text-zinc-400">
+                              {file.description}
+                            </p>
+                          ) : null}
+                          {file.url ? (
+                            <a
+                              className="mt-3 inline-flex items-center gap-2 text-sm text-emerald-200 hover:text-emerald-100"
+                              href={file.url}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              <Link2 aria-hidden className="size-4" />
+                              Open reference
+                            </a>
+                          ) : null}
+                        </div>
+                        {canEdit ? (
+                          <form action={removeAgentFile}>
+                            <input name="agentId" type="hidden" value={agent.id} />
+                            <input name="fileId" type="hidden" value={file.id} />
+                            <input
+                              name="workspaceId"
+                              type="hidden"
+                              value={context.workspace.id}
+                            />
+                            <Button
+                              aria-label={`Remove ${file.name}`}
+                              size="icon"
+                              type="submit"
+                              variant="ghost"
+                            >
+                              <Trash2 aria-hidden />
+                            </Button>
+                          </form>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  description="Attach source CSVs, helper Python, template decks, Drive files, Sheets, or Notion pages so this agent has explicit inputs."
+                  icon={FileText}
+                  title="No files attached"
+                />
+              )}
+
+              {canEdit ? (
+                <form
+                  action={addAgentFile}
+                  className="space-y-4 rounded-md border border-white/10 bg-black/20 p-4"
+                  encType="multipart/form-data"
+                >
+                  <input name="agentId" type="hidden" value={agent.id} />
+                  <input
+                    name="workspaceId"
+                    type="hidden"
+                    value={context.workspace.id}
+                  />
+                  <div>
+                    <p className="flex items-center gap-2 text-sm font-medium text-white">
+                      <FileUp aria-hidden className="size-4 text-emerald-200" />
+                      Add input
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-zinc-500">
+                      Upload small text files or add a URL to Google Slides,
+                      Sheets, Drive, Notion, or Looker Studio.
+                    </p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-[1fr_170px]">
+                    <div className="space-y-2">
+                      <Label htmlFor="detailReferenceUrl">Reference URL</Label>
+                      <Input
+                        id="detailReferenceUrl"
+                        name="referenceUrl"
+                        placeholder="https://docs.google.com/..."
+                        type="url"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="detailReferenceRole">Role</Label>
+                      <Select
+                        id="detailReferenceRole"
+                        name="referenceRole"
+                        defaultValue="reference"
+                      >
+                        <option value="template">Template</option>
+                        <option value="input_data">Input data</option>
+                        <option value="helper_code">Helper code</option>
+                        <option value="reference">Reference</option>
+                        <option value="output_destination">Output destination</option>
+                        <option value="other">Other</option>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="detailReferenceName">Reference name</Label>
+                      <Input
+                        id="detailReferenceName"
+                        name="referenceName"
+                        placeholder="Optional"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="detailReferenceDescription">Notes</Label>
+                      <Input
+                        id="detailReferenceDescription"
+                        name="referenceDescription"
+                        placeholder="Optional instruction"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-[1fr_170px]">
+                    <div className="space-y-2">
+                      <Label htmlFor="detailAgentFiles">Upload files</Label>
+                      <Input
+                        id="detailAgentFiles"
+                        multiple
+                        name="agentFiles"
+                        type="file"
+                        accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="detailUploadedFileRole">Upload role</Label>
+                      <Select
+                        id="detailUploadedFileRole"
+                        name="uploadedFileRole"
+                        defaultValue="input_data"
+                      >
+                        <option value="input_data">Input data</option>
+                        <option value="helper_code">Helper code</option>
+                        <option value="template">Template</option>
+                        <option value="reference">Reference</option>
+                        <option value="other">Other</option>
+                      </Select>
+                    </div>
+                  </div>
+                  <Button type="submit" variant="secondary">
+                    <FileUp aria-hidden />
+                    Add to agent
+                  </Button>
+                </form>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <Card>
           <CardHeader>
