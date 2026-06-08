@@ -460,6 +460,204 @@ function formatPercentMetric(value: unknown) {
   return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : "";
 }
 
+function formatPercentMetricRounded(value: unknown) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : "";
+}
+
+function latestSlidesReadResult(results: unknown[]) {
+  const readResult = latestSuccessfulToolResult(results, "google.slides.readText");
+  return asRecord(readResult?.result);
+}
+
+function textElementsForSlide(slide: Record<string, unknown>) {
+  return asObjectArray(slide.textElements)
+    .map((element) => ({
+      objectId: asString(element.objectId),
+      text: asString(element.text),
+    }))
+    .filter((element) => element.objectId && element.text);
+}
+
+function normalizeForMatch(value: string) {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isStandaloneMetricText(value: string) {
+  return /^£?[\d,]+(?:\.\d+)?%?K?$/i.test(value.trim());
+}
+
+function metricScopeForReportSlide(
+  slide: Record<string, unknown>,
+  metrics: Record<string, unknown>,
+) {
+  const slideText = normalizeForMatch(
+    textElementsForSlide(slide)
+      .map((element) => element.text)
+      .join(" "),
+  );
+  const campaigns = asRecord(metrics.campaigns);
+  const destinations = asRecord(metrics.destinations);
+
+  if (slideText.includes("quarterly ppc performance report")) {
+    return {
+      kind: "title",
+      name: "Overall",
+      metrics: asRecord(metrics.overall),
+    };
+  }
+
+  if (slideText.includes("overall performance trend")) {
+    return {
+      kind: "summary",
+      name: "Overall",
+      metrics: asRecord(metrics.overall),
+    };
+  }
+
+  for (const [name, scope] of Object.entries(campaigns)) {
+    if (slideText.includes(`${normalizeForMatch(name)} summary`)) {
+      return {
+        kind: "summary",
+        name,
+        metrics: asRecord(scope),
+      };
+    }
+  }
+
+  for (const [name, scope] of Object.entries(destinations)) {
+    const normalizedName = normalizeForMatch(name);
+    if (
+      slideText.includes(`${normalizedName} summary`) ||
+      (normalizedName === "other" && slideText.includes("other (destination) summary"))
+    ) {
+      return {
+        kind: "summary",
+        name,
+        metrics: asRecord(scope),
+      };
+    }
+  }
+
+  return null;
+}
+
+function reportMetricValueSequence(scope: Record<string, unknown>, kind: string) {
+  const values = [
+    formatIntegerMetric(scope.sales_leads),
+    kind === "title"
+      ? formatCurrencyMetric(scope.cost, true)
+      : formatCurrencyMetric(scope.cost),
+    formatDecimalCurrencyMetric(scope.cpl),
+    formatPercentMetric(scope.cvr),
+  ];
+
+  if (kind !== "title") {
+    values.push(formatIntegerMetric(scope.clicks));
+    values.push(formatPercentMetric(scope.ctr));
+  }
+
+  return values.filter(Boolean);
+}
+
+function commentaryForReportSlide(
+  scopeName: string,
+  scope: Record<string, unknown>,
+  overall: Record<string, unknown>,
+) {
+  const name = scopeName === "Overall" ? "The full data set" : scopeName;
+  const cpl = formatDecimalCurrencyMetric(scope.cpl);
+  const cvr = formatPercentMetric(scope.cvr);
+  const ctr = formatPercentMetric(scope.ctr);
+  const leads = formatIntegerMetric(scope.sales_leads);
+  const spend = formatCurrencyMetric(scope.cost);
+  const clicks = formatIntegerMetric(scope.clicks);
+  const overallLeads = Number(overall.sales_leads);
+  const scopeLeads = Number(scope.sales_leads);
+  const leadShare =
+    Number.isFinite(scopeLeads) && Number.isFinite(overallLeads) && overallLeads > 0
+      ? formatPercentMetricRounded(scopeLeads / overallLeads)
+      : "";
+
+  if (scopeName === "Overall") {
+    return [
+      `The uploaded CSV shows ${leads} leads from ${spend} of media spend, at a blended CPL of ${cpl}.`,
+      `Traffic volume was substantial at ${clicks} clicks, with CTR of ${ctr} and CVR of ${cvr}.`,
+      "Budget and performance commentary is based on the uploaded CSV plus Summon Notion/Drive memory; live Google Ads API data was not used in this run.",
+      "Human review is needed before this deck is sent externally, especially for YoY statements and visual charts that need live comparator data.",
+    ].join("\n");
+  }
+
+  return [
+    `${name} produced ${leads} leads from ${spend}, at a blended CPL of ${cpl}.`,
+    leadShare ? `${name} accounts for roughly ${leadShare} of total recorded leads in the uploaded data.` : "",
+    `CTR is ${ctr} and CVR is ${cvr}, so the next review should focus on whether traffic quality supports the current budget split.`,
+    "YoY and chart commentary should be reviewed against the live reporting source before client distribution.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function setShapeTextRequests(objectId: string, text: string) {
+  return [
+    {
+      deleteText: {
+        objectId,
+        textRange: { type: "ALL" },
+      },
+    },
+    {
+      insertText: {
+        objectId,
+        insertionIndex: 0,
+        text,
+      },
+    },
+  ];
+}
+
+function metricDeckBatchRequests(results: unknown[]) {
+  const metrics = metricArtifactJson(results);
+  const overall = asRecord(metrics.overall);
+  if (Object.keys(overall).length === 0) {
+    return [];
+  }
+
+  const readResult = latestSlidesReadResult(results);
+  const slides = asObjectArray(readResult.slides);
+  const requests: Record<string, unknown>[] = [];
+
+  for (const slide of slides) {
+    const scope = metricScopeForReportSlide(slide, metrics);
+    if (!scope) {
+      continue;
+    }
+
+    const elements = textElementsForSlide(slide);
+    const metricElements = elements.filter((element) => isStandaloneMetricText(element.text));
+    const values = reportMetricValueSequence(scope.metrics, scope.kind);
+
+    metricElements.slice(0, values.length).forEach((element, index) => {
+      const nextText = values[index];
+      if (nextText && element.text !== nextText) {
+        requests.push(...setShapeTextRequests(element.objectId, nextText));
+      }
+    });
+
+    if (scope.kind === "summary") {
+      const commentaryElement = elements
+        .filter((element) => element.text.length > 120)
+        .at(-1);
+      const commentary = commentaryForReportSlide(scope.name, scope.metrics, overall);
+      if (commentaryElement && commentary && commentaryElement.text !== commentary) {
+        requests.push(...setShapeTextRequests(commentaryElement.objectId, commentary));
+      }
+    }
+  }
+
+  return requests.slice(0, 180);
+}
+
 function reportMetricReplacements(results: unknown[]) {
   const metrics = metricArtifactJson(results);
   const overall = asRecord(metrics.overall);
@@ -540,6 +738,25 @@ function deterministicWorkflowCalls(input: {
       input: { presentationId },
     });
     return calls;
+  }
+
+  if (
+    input.requirements.requiresSlidesDeckWrite &&
+    presentationId &&
+    input.availableTools.includes("google.slides.batchUpdate") &&
+    hasSuccessfulTool(input.toolResults, "google.slides.readText") &&
+    !hasMeaningfulSlidesWrite(input.toolResults)
+  ) {
+    const requests = metricDeckBatchRequests(input.toolResults);
+    if (requests.length > 0) {
+      calls.push({
+        tool: "google.slides.batchUpdate",
+        reason:
+          "Apply object-level metric and commentary updates from sandbox JSON to the run-owned copied deck.",
+        input: { presentationId, requests },
+      });
+      return calls;
+    }
   }
 
   if (
