@@ -268,6 +268,20 @@ function compactToolResultsForPrompt(results: unknown[]) {
   return results.map(compactToolResultForPrompt);
 }
 
+function compactBasePromptForPlanner(basePrompt: string) {
+  const [beforeConnectorEvidence] = basePrompt.split("\nConnector evidence:");
+  const [beforeFiles] = beforeConnectorEvidence.split(
+    "\nAgent input files and references:",
+  );
+
+  return [
+    compactText(beforeFiles, 6000),
+    "",
+    "Agent files are listed separately below without large content previews.",
+    "Connector evidence is available for the final answer; use tools and prior tool results for execution planning.",
+  ].join("\n");
+}
+
 function successfulToolResults(results: unknown[]) {
   return results
     .filter(isToolCallOutputRecord)
@@ -619,7 +633,7 @@ function buildPlannerPrompt(input: {
     JSON.stringify(attachedFilesForPrompt(input.agent), null, 2),
     "",
     "Run prompt and connector context:",
-    input.basePrompt,
+    compactBasePromptForPlanner(input.basePrompt),
     "",
     "Prior tool results:",
     JSON.stringify(compactToolResultsForPrompt(input.priorResults), null, 2),
@@ -1168,6 +1182,17 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
       );
       llmResults.push(plan);
     } catch (error) {
+      if (missingOutcomes.length > 0 && iteration < MAX_TOOL_ITERATIONS - 1) {
+        toolResults.push(
+          workflowGuardResult([
+            ...missingOutcomes,
+            `Previous planner call failed: ${
+              error instanceof Error ? error.message : "Unable to parse planner response."
+            }`,
+          ]),
+        );
+        continue;
+      }
       if (toolResults.length > 0) {
         break;
       }
@@ -1178,6 +1203,15 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     try {
       calls = parsePlannedToolCalls(plan.text);
     } catch {
+      if (missingOutcomes.length > 0 && iteration < MAX_TOOL_ITERATIONS - 1) {
+        toolResults.push(
+          workflowGuardResult([
+            ...missingOutcomes,
+            "Previous planner response was not valid JSON. Continue with valid JSON tool calls.",
+          ]),
+        );
+        continue;
+      }
       break;
     }
 
