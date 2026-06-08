@@ -113,7 +113,7 @@ function toMultipartBody(parts: Array<{ headers: string; body: string | Buffer }
   for (const part of parts) {
     lines.push(Buffer.from(`--${boundary}\r\n`, "utf8"));
     lines.push(Buffer.from(part.headers, "utf8"));
-    lines.push(Buffer.from("\r\n", "utf8"));
+    lines.push(Buffer.from("\r\n\r\n", "utf8"));
     lines.push(
       typeof part.body === "string" ? Buffer.from(part.body, "utf8") : part.body,
     );
