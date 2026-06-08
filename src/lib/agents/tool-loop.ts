@@ -216,15 +216,15 @@ function compactToolResultForPrompt(value: unknown) {
         presentationId: result.presentationId,
         title: result.title,
         slides: asObjectArray(result.slides)
-          .slice(0, 30)
+          .slice(0, 16)
           .map((slide) => ({
             slideIndex: slide.slideIndex,
             slideObjectId: slide.slideObjectId,
             textElements: asObjectArray(slide.textElements)
-              .slice(0, 25)
+              .slice(0, 14)
               .map((element) => ({
                 objectId: element.objectId,
-                text: compactText(element.text, 700),
+                text: compactText(element.text, 360),
               })),
           })),
       },
