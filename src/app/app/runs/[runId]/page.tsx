@@ -90,6 +90,22 @@ function readConnectorResults(output: Prisma.JsonValue) {
   return [];
 }
 
+function readEvidenceRecords(result: Record<string, unknown>) {
+  if (!Array.isArray(result.records)) {
+    return [];
+  }
+
+  return result.records.filter(
+    (record) =>
+      Boolean(record) && typeof record === "object" && !Array.isArray(record),
+  ) as Array<Record<string, unknown>>;
+}
+
+function textField(record: Record<string, unknown>, field: string) {
+  const value = record[field];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 function readApprovalDecision(output: Prisma.JsonValue) {
   if (
     output &&
@@ -316,7 +332,7 @@ export default async function RunDetailPage({
           <CardContent className="grid gap-3 xl:grid-cols-2">
             {connectorResults.map((result) => (
               <div
-                className="rounded-md border border-white/10 bg-black/20 p-4"
+                className="space-y-4 rounded-md border border-white/10 bg-black/20 p-4"
                 key={String(result.connectorType)}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -330,6 +346,83 @@ export default async function RunDetailPage({
                   </div>
                   <StatusBadge status={String(result.status ?? "unknown")} />
                 </div>
+                {readEvidenceRecords(result).length > 0 ? (
+                  <div className="space-y-3">
+                    {readEvidenceRecords(result)
+                      .slice(0, 5)
+                      .map((record, index) => {
+                        const title =
+                          textField(record, "title") ??
+                          textField(record, "name") ??
+                          "Untitled source";
+                        const url =
+                          textField(record, "url") ??
+                          textField(record, "webViewLink");
+                        const snippet =
+                          textField(record, "snippet") ??
+                          textField(record, "textPreview");
+                        const query = textField(record, "query");
+                        const source = textField(record, "source");
+                        const type =
+                          textField(record, "type") ??
+                          textField(record, "mimeType") ??
+                          textField(record, "object");
+                        const lastUpdated =
+                          textField(record, "lastUpdated") ??
+                          textField(record, "lastEditedTime") ??
+                          textField(record, "modifiedTime");
+                        const exportError = textField(record, "exportError");
+
+                        return (
+                          <div
+                            className="rounded-md border border-white/10 bg-black/20 p-3"
+                            key={
+                              textField(record, "evidenceId") ??
+                              textField(record, "id") ??
+                              `${String(result.connectorType)}-${index}`
+                            }
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              {url ? (
+                                <Link
+                                  className="text-sm font-medium text-emerald-100 underline-offset-4 hover:underline"
+                                  href={url}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  {title}
+                                </Link>
+                              ) : (
+                                <p className="text-sm font-medium text-white">
+                                  {title}
+                                </p>
+                              )}
+                              {source ? (
+                                <span className="rounded-md border border-white/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.12em] text-zinc-500">
+                                  {source}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="mt-2 text-xs leading-5 text-zinc-500">
+                              {[type, query ? `query: ${query}` : null, lastUpdated]
+                                .filter(Boolean)
+                                .join(" - ")}
+                            </p>
+                            {snippet ? (
+                              <p className="mt-3 line-clamp-4 text-sm leading-6 text-zinc-300">
+                                {snippet}
+                              </p>
+                            ) : null}
+                            {exportError ? (
+                              <p className="mt-3 text-xs leading-5 text-amber-100">
+                                {exportError}
+                              </p>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                  </div>
+                ) : null}
               </div>
             ))}
           </CardContent>

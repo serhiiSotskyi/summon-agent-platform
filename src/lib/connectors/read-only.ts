@@ -29,6 +29,20 @@ type RuntimeCredential = Pick<
   "id" | "connectorType" | "displayName" | "encryptedCredentials" | "lastHealthCheckAt"
 >;
 
+type EvidenceSource = "notion" | "google-drive";
+
+type ConnectorEvidenceRecord = {
+  source: EvidenceSource;
+  title: string;
+  url: string | null;
+  type: string;
+  query: string;
+  snippet: string | null;
+  lastUpdated: string | null;
+  evidenceId: string;
+  exportError?: string | null;
+};
+
 export type ConnectorReadResult = {
   connectorType: string;
   connectorName: string;
@@ -45,6 +59,21 @@ export type ConnectorReadContext = {
   results: ConnectorReadResult[];
   blockers: string[];
 };
+
+const MEMORY_CONNECTOR_TYPES = ["notion", "google-drive"] as const;
+const MEMORY_QUERY_SET = [
+  "Summon Memory",
+  "budget tracker",
+  "reporting",
+  "Google Ads",
+  "PPC budget",
+] as const;
+const GOOGLE_DRIVE_EXPORT_MIME_TYPES: Record<string, string> = {
+  "application/vnd.google-apps.document": "text/plain",
+  "application/vnd.google-apps.spreadsheet": "text/csv",
+  "application/vnd.google-apps.presentation": "text/plain",
+};
+const CONNECTOR_RECORD_LIMIT = 12;
 
 function connectorName(key: string) {
   return getConnector(key)?.name ?? key;
@@ -112,6 +141,45 @@ function trimText(value: string, maxLength = 3000) {
     : normalized;
 }
 
+function compactValues(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))),
+  );
+}
+
+function memoryQueries(extraQuery?: string) {
+  return compactValues([extraQuery, ...MEMORY_QUERY_SET]);
+}
+
+function evidenceSlug(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function stringOrNull(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function dedupeEvidenceRecords(records: ConnectorEvidenceRecord[]) {
+  const seen = new Set<string>();
+  const deduped: ConnectorEvidenceRecord[] = [];
+
+  for (const record of records) {
+    const key = record.evidenceId || record.url || `${record.source}:${record.title}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    deduped.push(record);
+  }
+
+  return deduped;
+}
+
 function extractPlainText(value: unknown): string {
   if (!value) {
     return "";
@@ -167,6 +235,26 @@ function extractNotionTitle(page: unknown) {
 
   const title = extractPlainText(record.title);
   return title || "Untitled";
+}
+
+function extractNotionBlockText(block: unknown) {
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    return "";
+  }
+
+  const record = block as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : null;
+  const typedValue =
+    type && record[type] && typeof record[type] === "object"
+      ? (record[type] as Record<string, unknown>)
+      : {};
+
+  return compactValues([
+    type && type !== "unsupported" ? type.replaceAll("_", " ") : null,
+    extractPlainText(typedValue.title),
+    extractPlainText(typedValue.rich_text),
+    extractPlainText(typedValue.caption),
+  ]).join(": ");
 }
 
 async function refreshGoogleAccessToken(credential: RuntimeCredential) {
@@ -340,81 +428,86 @@ async function resolveGoogleAdsCustomerId({
 async function readGoogleDrive(credential: RuntimeCredential): Promise<ConnectorReadResult> {
   const accessToken = await refreshGoogleAccessToken(credential);
   const folderId = getEnv("GOOGLE_DRIVE_FOLDER_ID");
-  const query =
-    getEnv("GOOGLE_DRIVE_QUERY") ??
-    (folderId
-      ? `'${folderId.replaceAll("'", "\\'")}' in parents and trashed = false`
-      : "(name contains 'budget' or name contains 'tracker') and trashed = false");
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
-  url.searchParams.set("q", query);
-  url.searchParams.set("pageSize", "10");
-  url.searchParams.set("orderBy", "modifiedTime desc");
-  url.searchParams.set(
-    "fields",
-    "files(id,name,mimeType,modifiedTime,webViewLink,size)",
-  );
+  const configuredQuery = getEnv("GOOGLE_DRIVE_QUERY");
+  const queries = memoryQueries(configuredQuery);
+  const querySpecs = queries.map((query) => {
+    const term = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const scopedFolder = folderId
+      ? `'${folderId.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}' in parents and `
+      : "";
 
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    return {
+      label: query,
+      query: `${scopedFolder}trashed = false and (name contains '${term}' or fullText contains '${term}')`,
+    };
   });
-  const payload = (await readJson(response)) as
-    | { files?: Array<Record<string, unknown>> }
-    | null;
+  const files: Array<{ query: string; file: Record<string, unknown> }> = [];
 
-  if (!response.ok) {
-    throw apiError("Google Drive", response, payload);
+  for (const querySpec of querySpecs) {
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", querySpec.query);
+    url.searchParams.set("pageSize", "8");
+    url.searchParams.set("orderBy", "modifiedTime desc");
+    url.searchParams.set(
+      "fields",
+      "files(id,name,mimeType,modifiedTime,webViewLink,size)",
+    );
+
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const payload = (await readJson(response)) as
+      | { files?: Array<Record<string, unknown>> }
+      | null;
+
+    if (!response.ok) {
+      throw apiError("Google Drive", response, payload);
+    }
+
+    for (const file of payload?.files ?? []) {
+      files.push({ query: querySpec.label, file });
+    }
   }
 
-  const files = payload?.files ?? [];
-  const records = await Promise.all(
-    files.slice(0, 5).map(async (file) => {
-      const id = typeof file.id === "string" ? file.id : null;
-      const mimeType = typeof file.mimeType === "string" ? file.mimeType : "";
-      let textPreview: string | null = null;
-      let exportError: string | null = null;
+  const records = dedupeEvidenceRecords(
+    await Promise.all(
+      files.slice(0, CONNECTOR_RECORD_LIMIT).map(async ({ query, file }) => {
+        const id = stringOrNull(file.id);
+        const title = stringOrNull(file.name) ?? "Untitled";
+        const mimeType = stringOrNull(file.mimeType) ?? "unknown";
+        const exportMimeType = GOOGLE_DRIVE_EXPORT_MIME_TYPES[mimeType];
+        let snippet: string | null = null;
+        let exportError: string | null = null;
 
-      if (id && mimeType === "application/vnd.google-apps.document") {
-        const exportUrl = new URL(
-          `https://www.googleapis.com/drive/v3/files/${id}/export`,
-        );
-        exportUrl.searchParams.set("mimeType", "text/plain");
-        const exportResponse = await fetch(exportUrl, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
+        if (id && exportMimeType) {
+          const exportUrl = new URL(
+            `https://www.googleapis.com/drive/v3/files/${id}/export`,
+          );
+          exportUrl.searchParams.set("mimeType", exportMimeType);
+          const exportResponse = await fetch(exportUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
 
-        if (exportResponse.ok) {
-          textPreview = trimText(await exportResponse.text(), 1200);
-        } else {
-          exportError = `Document export failed with ${exportResponse.status}.`;
+          if (exportResponse.ok) {
+            snippet = trimText(await exportResponse.text(), 1400);
+          } else {
+            exportError = `Preview export failed with ${exportResponse.status}.`;
+          }
         }
-      }
 
-      if (id && mimeType === "application/vnd.google-apps.spreadsheet") {
-        const exportUrl = new URL(
-          `https://www.googleapis.com/drive/v3/files/${id}/export`,
-        );
-        exportUrl.searchParams.set("mimeType", "text/csv");
-        const exportResponse = await fetch(exportUrl, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-
-        if (exportResponse.ok) {
-          textPreview = trimText(await exportResponse.text(), 1200);
-        } else {
-          exportError = `Spreadsheet export failed with ${exportResponse.status}.`;
-        }
-      }
-
-      return {
-        id,
-        name: file.name ?? "Untitled",
-        mimeType,
-        modifiedTime: file.modifiedTime ?? null,
-        webViewLink: file.webViewLink ?? null,
-        textPreview,
-        exportError,
-      };
-    }),
+        return {
+          source: "google-drive",
+          title,
+          url: stringOrNull(file.webViewLink),
+          type: mimeType,
+          query,
+          snippet,
+          lastUpdated: stringOrNull(file.modifiedTime),
+          evidenceId: `drive:${id ?? evidenceSlug(title)}`,
+          exportError,
+        } satisfies ConnectorEvidenceRecord;
+      }),
+    ),
   );
 
   return {
@@ -427,7 +520,11 @@ async function readGoogleDrive(credential: RuntimeCredential): Promise<Connector
         : "No matching Drive files were found for the current query.",
     blockers: [],
     records,
-    meta: { query },
+    meta: {
+      queryCount: querySpecs.length,
+      queries: queries.join(" | "),
+      folderId: folderId ?? null,
+    },
   };
 }
 
@@ -599,39 +696,90 @@ async function readGoogleAds(credential: RuntimeCredential): Promise<ConnectorRe
 
 async function readNotion(credential: RuntimeCredential): Promise<ConnectorReadResult> {
   const accessToken = getNotionAccessToken(credential);
-  const query = getEnv("NOTION_SEARCH_QUERY") ?? "budget";
-  const response = await fetch("https://api.notion.com/v1/search", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      "Notion-Version": "2022-06-28",
-    },
-    body: JSON.stringify({
-      query,
-      page_size: 10,
-      sort: {
-        direction: "descending",
-        timestamp: "last_edited_time",
-      },
-    }),
-  });
-  const payload = (await readJson(response)) as
-    | { results?: Array<Record<string, unknown>> }
-    | null;
+  const queries = memoryQueries(getEnv("NOTION_SEARCH_QUERY"));
+  const results: Array<{ query: string; item: Record<string, unknown> }> = [];
 
-  if (!response.ok) {
-    throw apiError("Notion", response, payload);
+  for (const query of queries) {
+    const response = await fetch("https://api.notion.com/v1/search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+      },
+      body: JSON.stringify({
+        query,
+        page_size: 8,
+        sort: {
+          direction: "descending",
+          timestamp: "last_edited_time",
+        },
+      }),
+    });
+    const payload = (await readJson(response)) as
+      | { results?: Array<Record<string, unknown>> }
+      | null;
+
+    if (!response.ok) {
+      throw apiError("Notion", response, payload);
+    }
+
+    for (const item of payload?.results ?? []) {
+      results.push({ query, item });
+    }
   }
 
-  const records =
-    payload?.results?.map((item) => ({
-      object: item.object ?? null,
-      id: item.id ?? null,
-      title: extractNotionTitle(item),
-      url: item.url ?? null,
-      lastEditedTime: item.last_edited_time ?? null,
-    })) ?? [];
+  const records = dedupeEvidenceRecords(
+    await Promise.all(
+      results.slice(0, CONNECTOR_RECORD_LIMIT).map(async ({ query, item }) => {
+        const id = stringOrNull(item.id);
+        let snippet: string | null = null;
+        let exportError: string | null = null;
+
+        if (id && item.object === "page") {
+          const blocksUrl = new URL(
+            `https://api.notion.com/v1/blocks/${id}/children`,
+          );
+          blocksUrl.searchParams.set("page_size", "20");
+          const blocksResponse = await fetch(blocksUrl, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Notion-Version": "2022-06-28",
+            },
+          });
+          const blocksPayload = (await readJson(blocksResponse)) as
+            | { results?: unknown[] }
+            | null;
+
+          if (blocksResponse.ok) {
+            snippet = trimText(
+              (blocksPayload?.results ?? [])
+                .map(extractNotionBlockText)
+                .filter(Boolean)
+                .join(" "),
+              1400,
+            );
+          } else {
+            exportError = `Page preview failed with ${blocksResponse.status}.`;
+          }
+        }
+
+        const title = extractNotionTitle(item);
+
+        return {
+          source: "notion",
+          title,
+          url: stringOrNull(item.url),
+          type: stringOrNull(item.object) ?? "unknown",
+          query,
+          snippet: snippet || null,
+          lastUpdated: stringOrNull(item.last_edited_time),
+          evidenceId: `notion:${id ?? evidenceSlug(title)}`,
+          exportError,
+        } satisfies ConnectorEvidenceRecord;
+      }),
+    ),
+  );
 
   return {
     connectorType: "notion",
@@ -643,7 +791,7 @@ async function readNotion(credential: RuntimeCredential): Promise<ConnectorReadR
         : "No matching Notion pages or databases were found.",
     blockers: [],
     records,
-    meta: { query },
+    meta: { queryCount: queries.length, queries: queries.join(" | ") },
   };
 }
 
@@ -696,10 +844,13 @@ export async function collectReadOnlyConnectorContext({
       ),
     ),
   );
+  const runtimeTools = Array.from(
+    new Set([...uniqueTools, ...MEMORY_CONNECTOR_TYPES]),
+  );
   const credentials = await getDb().connectorCredential.findMany({
     where: {
       workspaceId,
-      connectorType: { in: uniqueTools },
+      connectorType: { in: runtimeTools },
       status: "ACTIVE",
     },
     select: {
@@ -713,10 +864,14 @@ export async function collectReadOnlyConnectorContext({
   const credentialsByType = new Map(
     credentials.map((credential) => [credential.connectorType, credential]),
   );
-  const results = await Promise.all(
-    uniqueTools.map((tool) => readConnector(tool, credentialsByType.get(tool))),
+  const readTools = runtimeTools.filter(
+    (tool) =>
+      uniqueTools.includes(tool as ConnectorKey) || credentialsByType.has(tool),
   );
-  const connectedTools = credentials.map((credential) => credential.connectorType);
+  const results = await Promise.all(
+    readTools.map((tool) => readConnector(tool, credentialsByType.get(tool))),
+  );
+  const connectedTools = readTools.filter((tool) => credentialsByType.has(tool));
   const missingTools = uniqueTools.filter((tool) => !credentialsByType.has(tool));
 
   return {
