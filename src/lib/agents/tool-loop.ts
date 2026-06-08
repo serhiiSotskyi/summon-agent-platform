@@ -469,6 +469,16 @@ async function executeOneTool(input: {
         );
       }
       artifacts.push(...generatedArtifacts);
+      if (sandbox.timedOut) {
+        throw new Error(
+          `Python sandbox timed out after ${sandbox.durationMs}ms.\n${sandbox.stderr}`,
+        );
+      }
+      if (sandbox.exitCode !== 0) {
+        throw new Error(
+          `Python sandbox exited with code ${sandbox.exitCode}.\n${sandbox.stderr}`,
+        );
+      }
       result = {
         command: sandbox.command,
         exitCode: sandbox.exitCode,

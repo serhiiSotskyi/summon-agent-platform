@@ -25,9 +25,9 @@ type PythonRunInput = {
 
 function safeFileName(value: string) {
   const cleaned = value
-    .replace(/[/\\]/g, "_")
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .replace(/_+/g, "_")
+    .replace(/[/\\\0]/g, "_")
+    .replace(/[\x00-\x1F\x7F]/g, "_")
+    .trim()
     .slice(0, 120);
 
   return cleaned || `file_${Date.now()}`;
