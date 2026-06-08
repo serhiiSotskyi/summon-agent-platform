@@ -634,6 +634,70 @@ export async function copyGoogleDriveFile(input: {
   };
 }
 
+export async function readGoogleSlidesText(input: {
+  workspaceId: string;
+  presentationId: string;
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(
+      input.presentationId,
+    )}`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  );
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const message = await apiErrorMessage("Google Slides read", response, payload);
+    throw new Error(message);
+  }
+
+  const presentation = payload as {
+    presentationId?: string;
+    title?: string;
+    slides?: Array<{
+      objectId?: string;
+      pageElements?: Array<{
+        objectId?: string;
+        shape?: {
+          text?: {
+            textElements?: Array<{
+              textRun?: {
+                content?: string;
+              };
+            }>;
+          };
+        };
+      }>;
+    }>;
+  };
+
+  return {
+    presentationId: presentation.presentationId ?? input.presentationId,
+    title: presentation.title ?? null,
+    slides: (presentation.slides ?? []).map((slide, slideIndex) => ({
+      slideIndex: slideIndex + 1,
+      slideObjectId: slide.objectId ?? null,
+      textElements: (slide.pageElements ?? [])
+        .map((element) => {
+          const text = (element.shape?.text?.textElements ?? [])
+            .map((textElement) => textElement.textRun?.content ?? "")
+            .join("")
+            .trim();
+
+          return {
+            objectId: element.objectId ?? null,
+            text,
+          };
+        })
+        .filter((element) => element.text),
+    })),
+  };
+}
+
 export async function createGoogleDriveTextFile(input: {
   workspaceId: string;
   name: string;

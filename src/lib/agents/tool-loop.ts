@@ -4,6 +4,7 @@ import {
   copyGoogleDriveFile,
   createGoogleDriveTextFile,
   createNotionPage,
+  readGoogleSlidesText,
   readGoogleSheetRange,
   replaceGoogleSlidesText,
   updateGoogleSheetRange,
@@ -11,6 +12,7 @@ import {
 import { getDb } from "@/lib/db";
 import type { LlmProvider } from "@/lib/env";
 import { createLlmClient } from "@/lib/llm";
+import type { GenerateTextResult, LlmUsage } from "@/lib/llm/types";
 import {
   GENERIC_AGENT_TOOLS,
   genericToolDefinition,
@@ -21,6 +23,8 @@ import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
 
 const MAX_TOOL_ITERATIONS = 5;
 const MAX_TOOL_CALLS_PER_ITERATION = 5;
+const TOOL_LLM_TIMEOUT_MS = 45_000;
+const FINAL_LLM_TIMEOUT_MS = 45_000;
 
 type ToolLoopAgent = Pick<
   Agent,
@@ -98,6 +102,27 @@ function asObjectArray(value: unknown) {
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
+}
+
+async function withLocalTimeout<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs: number,
+) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function compactText(value: unknown, maxLength = 3000) {
@@ -179,6 +204,28 @@ function compactToolResultForPrompt(value: unknown) {
     };
   }
 
+  if (toolName === "google.slides.readText") {
+    return {
+      ...base,
+      result: {
+        presentationId: result.presentationId,
+        title: result.title,
+        slides: asObjectArray(result.slides)
+          .slice(0, 30)
+          .map((slide) => ({
+            slideIndex: slide.slideIndex,
+            slideObjectId: slide.slideObjectId,
+            textElements: asObjectArray(slide.textElements)
+              .slice(0, 25)
+              .map((element) => ({
+                objectId: element.objectId,
+                text: compactText(element.text, 700),
+              })),
+          })),
+      },
+    };
+  }
+
   if (
     toolName === "google.slides.copyTemplate" ||
     toolName === "google.drive.copyFile" ||
@@ -214,6 +261,95 @@ function compactToolResultForPrompt(value: unknown) {
 
 function compactToolResultsForPrompt(results: unknown[]) {
   return results.map(compactToolResultForPrompt);
+}
+
+function sumOptional(values: Array<number | undefined>) {
+  const filtered = values.filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+
+  return filtered.length > 0
+    ? filtered.reduce((total, value) => total + value, 0)
+    : undefined;
+}
+
+function aggregateUsage(results: GenerateTextResult[]): LlmUsage | undefined {
+  const usages = results.map((result) => result.usage).filter(Boolean);
+  if (usages.length === 0) {
+    return undefined;
+  }
+
+  return {
+    inputTokens: sumOptional(usages.map((usage) => usage?.inputTokens)),
+    outputTokens: sumOptional(usages.map((usage) => usage?.outputTokens)),
+    totalTokens: sumOptional(usages.map((usage) => usage?.totalTokens)),
+    raw: {
+      source: "summed_tool_loop_llm_calls",
+      calls: usages.length,
+      usage: usages.map((usage) => usage?.raw ?? usage),
+    },
+  };
+}
+
+function aggregateEstimatedCost(results: GenerateTextResult[]) {
+  const values = results
+    .map((result) => result.estimatedCostUsd)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  return values.length > 0
+    ? values.reduce((total, value) => total + value, 0)
+    : null;
+}
+
+function buildFallbackFinalResult(input: {
+  provider: LlmProvider;
+  model: string;
+  toolResults: unknown[];
+  protectedActionRequests: string[];
+  llmResults: GenerateTextResult[];
+  error: unknown;
+}): GenerateTextResult {
+  const message =
+    input.error instanceof Error ? input.error.message : "Final response generation failed.";
+  const compactResults = compactToolResultsForPrompt(input.toolResults);
+  const toolRecords = compactResults.filter(isToolCallOutputRecord);
+  const artifactLines = toolRecords
+    .flatMap((record) => asObjectArray(record.artifacts))
+    .map((artifact) => {
+      const name = asString(artifact.name, "Artifact");
+      const location = asString(artifact.location);
+      return location ? `- ${name}: ${location}` : `- ${name}`;
+    });
+
+  const text = [
+    "Tool execution completed, but the final LLM response step did not complete.",
+    `Reason: ${message}`,
+    "",
+    "Generated artifacts:",
+    artifactLines.length > 0 ? artifactLines.join("\n") : "- No artifact links were recorded.",
+    "",
+    "Tool call summary:",
+    compactResults
+      .map((result) => {
+        const record = asRecord(result);
+        return `- ${asString(record.toolName, "tool")}: ${asString(record.status, "unknown")}${
+          record.error ? ` (${record.error})` : ""
+        }`;
+      })
+      .join("\n"),
+    "",
+    input.protectedActionRequests.length > 0
+      ? `Blocked protected actions: ${input.protectedActionRequests.join("; ")}`
+      : "No protected actions were executed.",
+  ].join("\n");
+
+  return {
+    provider: input.provider,
+    model: input.model,
+    text,
+    usage: aggregateUsage(input.llmResults),
+    estimatedCostUsd: aggregateEstimatedCost(input.llmResults),
+  };
 }
 
 function extractJsonObject(text: string) {
@@ -297,6 +433,11 @@ function schemaForTool(tool: GenericAgentToolKey) {
         presentationId: "template presentation id",
         name: "new deck name",
       };
+    case "google.slides.readText":
+      return {
+        presentationUrl: "Google Slides URL, optional alternative to presentationId",
+        presentationId: "Google Slides presentation id",
+      };
     case "google.slides.replaceText":
       return {
         presentationId: "deck id created/copied earlier in this run",
@@ -344,6 +485,7 @@ function buildPlannerPrompt(input: {
     "Allowed without approval: reading data, running helper code in the sandbox, creating new files, copying templates, editing files created/copied in this same run, and creating Notion memory pages.",
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
+    "For Google Slides template work, use google.slides.readText on the copied deck before broad replacements when the exact text structure matters.",
     "For google.slides.replaceText, match exact visible text inside a single text run. If a KPI value and label are separate, replace the standalone value, for example \"5,682\" instead of \"5,682 Total Leads\".",
     "After google.slides.replaceText, inspect replacementResults. If a required replacement has occurrencesChanged: 0, issue another replaceText with a narrower exact text or use batchUpdate against the copied deck.",
     "For Python work, use uploaded helper files or provide short generated Python in python.run.code.",
@@ -730,6 +872,26 @@ async function executeOneTool(input: {
       };
     }
 
+    if (toolName === "google.slides.readText") {
+      const attached = firstAttachedGoogleFile(input.agent, {
+        role: "template",
+        urlPattern: /docs\.google\.com\/presentation/,
+      });
+      const presentationId = parseGoogleFileId(
+        asString(request.presentationId) ||
+          asString(request.presentationUrl) ||
+          attached?.url ||
+          "",
+      );
+      if (!presentationId) {
+        throw new Error("google.slides.readText requires presentationId, presentationUrl, or an attached Slides template.");
+      }
+      result = await readGoogleSlidesText({
+        workspaceId: input.workspaceId,
+        presentationId,
+      });
+    }
+
     if (toolName === "google.slides.replaceText") {
       const presentationId = parseGoogleFileId(asString(request.presentationId));
       requireCreatedGoogleFile(input.state, presentationId, toolName);
@@ -846,18 +1008,32 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     protectedActionRequests: [],
   };
   const toolResults: unknown[] = [];
+  const llmResults: GenerateTextResult[] = [];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
-    const plan = await client.generateText({
-      systemPrompt: input.systemPrompt,
-      model: input.model,
-      prompt: buildPlannerPrompt({
-        agent: input.agent,
-        basePrompt: input.basePrompt,
-        availableTools,
-        priorResults: toolResults,
-      }),
-    });
+    let plan: GenerateTextResult;
+    try {
+      plan = await withLocalTimeout(
+        client.generateText({
+          systemPrompt: input.systemPrompt,
+          model: input.model,
+          prompt: buildPlannerPrompt({
+            agent: input.agent,
+            basePrompt: input.basePrompt,
+            availableTools,
+            priorResults: toolResults,
+          }),
+        }),
+        "Tool planner",
+        TOOL_LLM_TIMEOUT_MS,
+      );
+      llmResults.push(plan);
+    } catch (error) {
+      if (toolResults.length > 0) {
+        break;
+      }
+      throw error;
+    }
 
     let calls: PlannedToolCall[] = [];
     try {
@@ -884,15 +1060,35 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     }
   }
 
-  const final = await client.generateText({
-    systemPrompt: input.systemPrompt,
-    model: input.model,
-    prompt: buildFinalPrompt({
-      basePrompt: input.basePrompt,
+  let final: GenerateTextResult;
+  try {
+    final = await withLocalTimeout(
+      client.generateText({
+        systemPrompt: input.systemPrompt,
+        model: input.model,
+        prompt: buildFinalPrompt({
+          basePrompt: input.basePrompt,
+          toolResults,
+          protectedActionRequests: state.protectedActionRequests,
+        }),
+      }),
+      "Final response",
+      FINAL_LLM_TIMEOUT_MS,
+    );
+    llmResults.push(final);
+  } catch (error) {
+    if (toolResults.length === 0) {
+      throw error;
+    }
+    final = buildFallbackFinalResult({
+      provider: input.provider,
+      model: input.model,
       toolResults,
       protectedActionRequests: state.protectedActionRequests,
-    }),
-  });
+      llmResults,
+      error,
+    });
+  }
 
   const toolCallRecords = toolResults.filter(isToolCallOutputRecord);
   const toolCalls = toolCallRecords.map((result) => toJsonValue(result));

@@ -41,6 +41,13 @@ export const GENERIC_AGENT_TOOLS = [
     category: "Google Slides",
   },
   {
+    key: "google.slides.readText",
+    name: "Read Slides text",
+    summary:
+      "Read slide/object text from a Google Slides deck so the agent can target precise template replacements.",
+    category: "Google Slides",
+  },
+  {
     key: "google.slides.replaceText",
     name: "Replace text in generated Slides",
     summary:
