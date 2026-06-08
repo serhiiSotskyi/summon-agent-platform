@@ -32,7 +32,7 @@ type CreateScheduledAgentRunInput = {
   workspaceId: string;
 };
 
-const DEFAULT_AGENT_RUN_TIMEOUT_MS = 180_000;
+const DEFAULT_AGENT_RUN_TIMEOUT_MS = 300_000;
 
 function normalizeTools(tools: Prisma.JsonValue) {
   if (!Array.isArray(tools)) {

@@ -21,7 +21,7 @@ import {
 } from "@/lib/tools/definitions";
 import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
 
-const MAX_TOOL_ITERATIONS = 5;
+const MAX_TOOL_ITERATIONS = 8;
 const MAX_TOOL_CALLS_PER_ITERATION = 5;
 const TOOL_LLM_TIMEOUT_MS = 45_000;
 const FINAL_LLM_TIMEOUT_MS = 45_000;
@@ -73,6 +73,11 @@ type RuntimeState = {
     mimeType: string | null;
   }>;
   protectedActionRequests: string[];
+};
+
+type WorkflowRequirementState = {
+  requiresSlidesDeckWrite: boolean;
+  requiresNotionPublish: boolean;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -261,6 +266,119 @@ function compactToolResultForPrompt(value: unknown) {
 
 function compactToolResultsForPrompt(results: unknown[]) {
   return results.map(compactToolResultForPrompt);
+}
+
+function successfulToolResults(results: unknown[]) {
+  return results
+    .filter(isToolCallOutputRecord)
+    .filter((result) => result.status === "succeeded");
+}
+
+function inferWorkflowRequirements(input: {
+  agent: ToolLoopAgent;
+  basePrompt: string;
+  availableTools: GenericAgentToolKey[];
+}): WorkflowRequirementState {
+  const prompt = [
+    input.agent.name,
+    input.agent.description,
+    input.agent.systemPrompt,
+    input.basePrompt,
+    ...input.agent.files.map((file) =>
+      [file.name, file.description, file.role, file.url].filter(Boolean).join(" "),
+    ),
+  ]
+    .join("\n")
+    .toLowerCase();
+
+  const hasSlidesTools =
+    input.availableTools.includes("google.slides.copyTemplate") &&
+    (input.availableTools.includes("google.slides.replaceText") ||
+      input.availableTools.includes("google.slides.batchUpdate"));
+  const mentionsSlidesOutput =
+    /\b(deck|slide|slides|presentation|google slides|qbr|report)\b/.test(prompt);
+  const asksToCreateOrPopulate =
+    /\b(create|generate|recreate|populate|update|edit|replace|build|produce)\b/.test(prompt);
+
+  const hasNotionTool = input.availableTools.includes("notion.createPage");
+  const asksForNotionPublish =
+    /\b(notion|memory page|summon memory|publish|create page|add .*memory)\b/.test(prompt) &&
+    /\b(create|publish|add|write|summarize|link)\b/.test(prompt);
+
+  return {
+    requiresSlidesDeckWrite: hasSlidesTools && mentionsSlidesOutput && asksToCreateOrPopulate,
+    requiresNotionPublish: hasNotionTool && asksForNotionPublish,
+  };
+}
+
+function hasSuccessfulTool(results: unknown[], toolName: GenericAgentToolKey) {
+  return successfulToolResults(results).some((result) => result.toolName === toolName);
+}
+
+function hasMeaningfulSlidesWrite(results: unknown[]) {
+  return successfulToolResults(results).some((result) => {
+    if (result.toolName === "google.slides.batchUpdate") {
+      return true;
+    }
+
+    if (result.toolName !== "google.slides.replaceText") {
+      return false;
+    }
+
+    const replacementResults = asObjectArray(asRecord(result.result).replacementResults);
+    return replacementResults.some((replacement) => {
+      const changed = replacement.occurrencesChanged;
+      return typeof changed === "number" && changed > 0;
+    });
+  });
+}
+
+function missingWorkflowOutcomes(input: {
+  requirements: WorkflowRequirementState;
+  toolResults: unknown[];
+  availableTools: GenericAgentToolKey[];
+}) {
+  const missing: string[] = [];
+
+  if (input.requirements.requiresSlidesDeckWrite) {
+    if (!hasSuccessfulTool(input.toolResults, "google.slides.copyTemplate")) {
+      missing.push(
+        "Copy the source/template deck into a run-owned Google Slides deck with google.slides.copyTemplate.",
+      );
+    } else if (
+      input.availableTools.includes("google.slides.readText") &&
+      !hasSuccessfulTool(input.toolResults, "google.slides.readText")
+    ) {
+      missing.push(
+        "Read the copied Google Slides deck with google.slides.readText before targeting replacements.",
+      );
+    } else if (!hasMeaningfulSlidesWrite(input.toolResults)) {
+      missing.push(
+        "Populate the copied Google Slides deck with google.slides.replaceText or google.slides.batchUpdate. Do not stop after copying or reading the deck.",
+      );
+    }
+  }
+
+  if (
+    input.requirements.requiresNotionPublish &&
+    !hasSuccessfulTool(input.toolResults, "notion.createPage")
+  ) {
+    missing.push(
+      "Create the required Notion memory page with notion.createPage and include the generated artifact links.",
+    );
+  }
+
+  return missing;
+}
+
+function workflowGuardResult(missing: string[]) {
+  return {
+    type: "workflow_guard",
+    status: "incomplete",
+    missingRequiredOutcomes: missing,
+    instruction:
+      "The run prompt requires these outcomes. Continue with tool calls that complete at least one missing outcome; do not return an empty tool plan yet.",
+  };
 }
 
 function sumOptional(values: Array<number | undefined>) {
@@ -477,6 +595,7 @@ function buildPlannerPrompt(input: {
   basePrompt: string;
   availableTools: GenericAgentToolKey[];
   priorResults: unknown[];
+  missingWorkflowOutcomes: string[];
 }) {
   return [
     "You are planning tool calls for a Summon agent run.",
@@ -488,6 +607,8 @@ function buildPlannerPrompt(input: {
     "For Google Slides template work, use google.slides.readText on the copied deck before broad replacements when the exact text structure matters.",
     "For google.slides.replaceText, match exact visible text inside a single text run. If a KPI value and label are separate, replace the standalone value, for example \"5,682\" instead of \"5,682 Total Leads\".",
     "After google.slides.replaceText, inspect replacementResults. If a required replacement has occurrencesChanged: 0, issue another replaceText with a narrower exact text or use batchUpdate against the copied deck.",
+    "If the run prompt requires a generated deck, report, file, or memory page, keep calling tools until those artifacts are actually created or updated. Do not finalize from a copied/read-only artifact.",
+    "If Required workflow outcomes below is non-empty, you must call tools to complete at least one missing outcome. Only return {\"toolCalls\":[]} when the missing outcomes are resolved or a tool failure makes them impossible.",
     "For Python work, use uploaded helper files or provide short generated Python in python.run.code.",
     "If no tool is needed, return {\"toolCalls\":[]}.",
     "",
@@ -502,6 +623,9 @@ function buildPlannerPrompt(input: {
     "",
     "Prior tool results:",
     JSON.stringify(compactToolResultsForPrompt(input.priorResults), null, 2),
+    "",
+    "Required workflow outcomes still missing:",
+    JSON.stringify(input.missingWorkflowOutcomes, null, 2),
     "",
     "JSON shape:",
     JSON.stringify(
@@ -524,6 +648,7 @@ function buildFinalPrompt(input: {
   basePrompt: string;
   toolResults: unknown[];
   protectedActionRequests: string[];
+  missingWorkflowOutcomes: string[];
 }) {
   return [
     input.basePrompt,
@@ -533,6 +658,9 @@ function buildFinalPrompt(input: {
     "",
     "Write the final response for the Summon team.",
     "Include evidence used, generated artifacts with links, what was not verified, recommendations, and any blocked protected actions.",
+    input.missingWorkflowOutcomes.length > 0
+      ? `Unresolved required workflow outcomes: ${input.missingWorkflowOutcomes.join("; ")}. Be explicit that the run is incomplete.`
+      : "All inferred required workflow outcomes were completed.",
     input.protectedActionRequests.length > 0
       ? `Blocked protected actions: ${input.protectedActionRequests.join("; ")}`
       : "No protected actions were executed.",
@@ -1007,10 +1135,20 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     createdGoogleFiles: [],
     protectedActionRequests: [],
   };
+  const workflowRequirements = inferWorkflowRequirements({
+    agent: input.agent,
+    basePrompt: input.basePrompt,
+    availableTools,
+  });
   const toolResults: unknown[] = [];
   const llmResults: GenerateTextResult[] = [];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+    const missingOutcomes = missingWorkflowOutcomes({
+      requirements: workflowRequirements,
+      toolResults,
+      availableTools,
+    });
     let plan: GenerateTextResult;
     try {
       plan = await withLocalTimeout(
@@ -1022,6 +1160,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
             basePrompt: input.basePrompt,
             availableTools,
             priorResults: toolResults,
+            missingWorkflowOutcomes: missingOutcomes,
           }),
         }),
         "Tool planner",
@@ -1043,6 +1182,10 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     }
 
     if (calls.length === 0) {
+      if (missingOutcomes.length > 0 && iteration < MAX_TOOL_ITERATIONS - 1) {
+        toolResults.push(workflowGuardResult(missingOutcomes));
+        continue;
+      }
       break;
     }
 
@@ -1060,6 +1203,12 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     }
   }
 
+  const unresolvedWorkflowOutcomes = missingWorkflowOutcomes({
+    requirements: workflowRequirements,
+    toolResults,
+    availableTools,
+  });
+
   let final: GenerateTextResult;
   try {
     final = await withLocalTimeout(
@@ -1070,6 +1219,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
           basePrompt: input.basePrompt,
           toolResults,
           protectedActionRequests: state.protectedActionRequests,
+          missingWorkflowOutcomes: unresolvedWorkflowOutcomes,
         }),
       }),
       "Final response",
@@ -1118,6 +1268,7 @@ export function genericToolInstruction() {
     "Generic agent tools are available only when selected on the agent.",
     `Supported generic tools: ${GENERIC_AGENT_TOOLS.map((tool) => tool.key).join(", ")}.`,
     "Use tools for real work instead of pretending they ran.",
+    "When a task asks for generated artifacts such as decks, reports, files, or memory pages, do not stop after reading context; create or update the requested run-owned outputs.",
     "Create/copy/write only run-owned outputs unless approval is explicitly granted.",
   ].join("\n");
 }
