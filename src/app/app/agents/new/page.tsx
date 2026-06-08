@@ -7,7 +7,7 @@ import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { DEFAULT_SCHEDULE_TIMEZONE } from "@/lib/agents/schedules";
-import { QBR_GENERATE_DECK_TOOL } from "@/lib/tools/qbr";
+import { GENERIC_AGENT_TOOLS } from "@/lib/tools/definitions";
 import { createAgentDraft } from "../../actions";
 
 type SearchParams = Promise<{ workspace?: string; demo?: string }>;
@@ -236,6 +236,9 @@ export default async function NewAgentPage({
               <CardTitle>Tools</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Connectors
+              </p>
               {connectorCatalog.map((connector) => (
                 <label
                   className="flex cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-black/20 p-3 text-sm"
@@ -257,29 +260,35 @@ export default async function NewAgentPage({
                   </span>
                 </label>
               ))}
-              <label className="flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm">
-                <input
-                  className="mt-1 accent-emerald-300"
-                  name="tools"
-                  type="checkbox"
-                  value={QBR_GENERATE_DECK_TOOL}
-                />
-                <span>
-                  <span className="block font-medium text-white">
-                    Report/deck generation tool
+              <p className="pt-2 text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Agent tools
+              </p>
+              {GENERIC_AGENT_TOOLS.map((tool) => (
+                <label
+                  className="flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm"
+                  key={tool.key}
+                >
+                  <input
+                    className="mt-1 accent-emerald-300"
+                    name="tools"
+                    type="checkbox"
+                    value={tool.key}
+                  />
+                  <span>
+                    <span className="block font-medium text-white">
+                      {tool.name}
+                    </span>
+                    <span className="mt-1 block leading-5 text-emerald-100/80">
+                      {tool.summary}
+                    </span>
                   </span>
-                  <span className="mt-1 block leading-5 text-emerald-100/80">
-                    Uses attached CSV, helper code, and template references to
-                    generate report artifacts. It should not rely on hardcoded
-                    client files.
-                  </span>
-                </span>
-              </label>
+                </label>
+              ))}
               <Alert>
                 <FileUp aria-hidden className="mb-2 size-4" />
-                Report generation is one optional tool. The agent still needs
-                files or references attached above so it knows what to calculate
-                and which template to copy.
+                Pick the tools this agent may use. Reads, sandbox code, creating
+                new files, copying templates, and editing run-owned outputs are
+                allowed; destructive changes still require approval.
               </Alert>
             </CardContent>
           </Card>

@@ -1,0 +1,74 @@
+export const GENERIC_AGENT_TOOLS = [
+  {
+    key: "python.run",
+    name: "Python sandbox",
+    summary:
+      "Run uploaded or generated Python in the run workspace and return stdout, stderr, JSON, and generated files.",
+    category: "Sandbox",
+  },
+  {
+    key: "google.drive.copyFile",
+    name: "Copy Drive file",
+    summary:
+      "Copy a Google Drive file, including native Slides, Sheets, and Docs templates, into a run-owned output.",
+    category: "Google Drive",
+  },
+  {
+    key: "google.drive.createTextFile",
+    name: "Create Drive text file",
+    summary:
+      "Create a new text, JSON, CSV, or Markdown file in Google Drive.",
+    category: "Google Drive",
+  },
+  {
+    key: "google.sheets.readRange",
+    name: "Read Google Sheet range",
+    summary: "Read values from a Google Sheets range.",
+    category: "Google Sheets",
+  },
+  {
+    key: "google.sheets.updateRange",
+    name: "Update generated Google Sheet",
+    summary:
+      "Update cells in a Sheet created or copied by the current run. Existing external Sheets are blocked for approval.",
+    category: "Google Sheets",
+  },
+  {
+    key: "google.slides.copyTemplate",
+    name: "Copy Slides template",
+    summary:
+      "Copy a Google Slides template/reference deck into a run-owned editable deck.",
+    category: "Google Slides",
+  },
+  {
+    key: "google.slides.replaceText",
+    name: "Replace text in generated Slides",
+    summary:
+      "Replace placeholder text in a Google Slides deck created or copied by the current run.",
+    category: "Google Slides",
+  },
+  {
+    key: "google.slides.batchUpdate",
+    name: "Slides batch update",
+    summary:
+      "Run raw Google Slides batchUpdate requests against a deck created or copied by the current run.",
+    category: "Google Slides",
+  },
+  {
+    key: "notion.createPage",
+    name: "Create Notion memory page",
+    summary:
+      "Create a new Notion page with the run summary, artifacts, and links.",
+    category: "Notion",
+  },
+] as const;
+
+export type GenericAgentToolKey = (typeof GENERIC_AGENT_TOOLS)[number]["key"];
+
+export function isGenericAgentToolKey(value: string): value is GenericAgentToolKey {
+  return GENERIC_AGENT_TOOLS.some((tool) => tool.key === value);
+}
+
+export function genericToolDefinition(key: string) {
+  return GENERIC_AGENT_TOOLS.find((tool) => tool.key === key);
+}

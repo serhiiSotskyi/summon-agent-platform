@@ -4,6 +4,10 @@ import {
   SUMMON_MEMORY_SYSTEM_INSTRUCTION,
 } from "@/lib/agents/defaults";
 import { buildAgentFilesPromptSection } from "@/lib/agents/files";
+import {
+  genericToolInstruction,
+  runAgentToolLoop,
+} from "@/lib/agents/tool-loop";
 import { canRunAgent } from "@/lib/app/permissions";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { collectReadOnlyConnectorContext } from "@/lib/connectors/read-only";
@@ -16,12 +20,6 @@ import {
   type ApprovedActionJob,
   type ManualAgentRunJob,
 } from "@/lib/queue/agent-runs";
-import {
-  agentWantsQbrTool,
-  buildQbrPromptSection,
-  executeQbrGenerateDeckTool,
-  QBR_GENERATE_DECK_TOOL,
-} from "@/lib/tools/qbr";
 
 type CreateManualAgentRunInput = {
   agentId: string;
@@ -132,6 +130,7 @@ function buildReadOnlyRunPrompt({
   return [
     `Run "${agentName}" using the read-only connector evidence below.`,
     "External tools may have been called. Do not claim any budget edit, campaign change, delete action, or external send happened unless tool output explicitly says so.",
+    genericToolInstruction(),
     "Produce a concise operational result for a non-technical Summon team member.",
     "Base the answer on the evidence. Cite source titles and URLs from connector records when available.",
     "If a connector is blocked or errored, say exactly what is missing instead of guessing.",
@@ -175,7 +174,7 @@ async function createApprovalIfNeeded({
   tools: string[];
   actionPermissionMode: string;
 }) {
-  if (actionPermissionMode !== "ASK_BEFORE_CHANGES" || tools.length === 0) {
+  if (tools.length === 0) {
     return null;
   }
 
@@ -202,8 +201,10 @@ async function createApprovalIfNeeded({
       requestedAction: {
         title: "Review protected next actions",
         description:
-          "This read-only run proposed actions that may affect external systems. Review before allowing future mutations.",
-        mode: "read_only",
+          actionPermissionMode === "FULL_ACCESS"
+            ? "A protected/destructive tool attempt was blocked even though the agent has full access. Review before allowing mutation of an existing external file or system."
+            : "This run attempted protected actions that may affect external systems. Review before allowing future mutations.",
+        mode: "protected_action_review",
         tools,
         outputPreview: summarizeOutput(llmOutput),
       },
@@ -369,45 +370,55 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       workspaceId: job.workspaceId,
       tools,
     });
-    const qbrOutput = agentWantsQbrTool(run.agent)
-      ? await executeQbrGenerateDeckTool({
-          agentRunId: run.id,
-          workspaceId: job.workspaceId,
-          agent: run.agent,
-        })
-      : null;
     const provider = llmProviderSchema.catch("openai").parse(run.agent.llmProvider);
-    const result = await withTimeout(
-      createLlmClient(provider).generateText({
-        systemPrompt: [
-          SUMMON_MEMORY_SYSTEM_INSTRUCTION,
-          run.agent.systemPrompt,
-        ].join("\n\n"),
+    const systemPrompt = [
+      SUMMON_MEMORY_SYSTEM_INSTRUCTION,
+      genericToolInstruction(),
+      run.agent.systemPrompt,
+    ].join("\n\n");
+    const basePrompt = buildReadOnlyRunPrompt({
+      agentName: run.agent.name,
+      agentFilesContext,
+      connectorContext,
+      tools,
+    });
+    const toolLoopResult = await withTimeout(
+      runAgentToolLoop({
+        agentRunId: run.id,
+        workspaceId: job.workspaceId,
+        agent: run.agent,
+        provider,
         model: run.agent.llmModel,
-        prompt: buildReadOnlyRunPrompt({
-          agentName: run.agent.name,
-          agentFilesContext,
-          connectorContext,
-          toolExecutionContext: buildQbrPromptSection(qbrOutput),
-          tools,
-        }),
+        basePrompt,
+        systemPrompt,
+        selectedTools: tools,
       }),
       getAgentRunTimeoutMs(),
     );
-    const approvalCandidateTools = tools.filter(
-      (tool) => tool !== QBR_GENERATE_DECK_TOOL,
-    );
+    const result =
+      toolLoopResult.final ??
+      (await withTimeout(
+        createLlmClient(provider).generateText({
+          systemPrompt,
+          model: run.agent.llmModel,
+          prompt: basePrompt,
+        }),
+        getAgentRunTimeoutMs(),
+      ));
     const approval = await createApprovalIfNeeded({
       agentId: run.agent.id,
       agentRunId: run.id,
       workspaceId: job.workspaceId,
       requestedById: job.triggeredById,
       llmOutput: result.text,
-      tools: approvalCandidateTools,
+      tools: toolLoopResult.protectedActionRequests,
       actionPermissionMode: run.agent.actionPermissionMode,
     });
     const output: Prisma.InputJsonObject = {
-      mode: qbrOutput ? "tool_execution" : "read_only",
+      mode:
+        toolLoopResult.toolCalls.length > 0
+          ? "generic_tool_loop"
+          : "read_only",
       provider: result.provider,
       model: result.model,
       usage: (result.usage ?? null) as Prisma.InputJsonValue,
@@ -432,20 +443,17 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       missingTools: connectorContext.missingTools,
       connectorResults:
         connectorContext.results as unknown as Prisma.InputJsonValue,
-      blockers: [...connectorContext.blockers, ...(qbrOutput?.blockers ?? [])],
-      qbr: qbrOutput
-        ? ({
-            referenceDeckUrl: qbrOutput.referenceDeckUrl,
-            manifest: qbrOutput.manifest,
-            googleSlides: qbrOutput.googleSlides,
-            notionMemory: qbrOutput.notionMemory,
-            blockers: qbrOutput.blockers,
-          } as unknown as Prisma.InputJsonObject)
-        : null,
-      toolCalls: qbrOutput?.toolCalls ?? [],
-      artifacts: qbrOutput?.artifacts ?? [],
+      blockers: [
+        ...connectorContext.blockers,
+        ...toolLoopResult.protectedActionRequests,
+      ],
+      toolResults: toolLoopResult.toolResults as unknown as Prisma.InputJsonValue,
+      createdGoogleFiles:
+        toolLoopResult.createdGoogleFiles as unknown as Prisma.InputJsonValue,
+      toolCalls: toolLoopResult.toolCalls as Prisma.InputJsonArray,
+      artifacts: toolLoopResult.artifacts as Prisma.InputJsonArray,
       approvalRequestId: approval?.id ?? null,
-      note: qbrOutput
+      note: toolLoopResult.toolCalls.length > 0
         ? "Allowed create/copy/write tools may have produced new artifacts. No destructive actions, sends, budget edits, or campaign changes were made."
         : "Read-only connector calls may have been executed. No external writes, sends, budget edits, or campaign changes were made.",
     };

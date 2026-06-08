@@ -86,6 +86,13 @@ type GoogleSlidesImportResult = {
   mimeType: string;
 };
 
+type GoogleDriveFileResult = {
+  fileId: string;
+  fileName: string;
+  mimeType: string | null;
+  webViewLink: string | null;
+};
+
 const GOOGLE_SLIDES_MIME = "application/vnd.google-apps.presentation";
 const GOOGLE_PPTX_MIME =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -571,6 +578,247 @@ export async function importPptxAsGoogleSlides(
     webViewLink: metadataPayload.webViewLink ?? null,
     webContentLink: metadataPayload.webContentLink ?? null,
   };
+}
+
+async function googleCredentialAndToken(workspaceId: string) {
+  const credential = await resolveGoogleDriveCredential(workspaceId);
+  const payload = getCredentialPayload(credential);
+  assertGoogleScopes(payload);
+  return {
+    credential,
+    accessToken: await refreshGoogleAccessToken(credential),
+  };
+}
+
+function googleFileFields() {
+  return "id,name,mimeType,webViewLink";
+}
+
+export async function copyGoogleDriveFile(input: {
+  workspaceId: string;
+  fileId: string;
+  name?: string;
+  parentFolderId?: string | null;
+}): Promise<GoogleDriveFileResult> {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      input.fileId,
+    )}/copy?fields=${encodeURIComponent(googleFileFields())}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.parentFolderId ? { parents: [input.parentFolderId] } : {}),
+      }),
+    },
+  );
+  const payload = (await readJson(response)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage("Google Drive copy", response, payload);
+    throw new Error(message);
+  }
+
+  return {
+    fileId: payload.id,
+    fileName: payload.name ?? input.name ?? "Copied file",
+    mimeType: payload.mimeType ?? null,
+    webViewLink: payload.webViewLink ?? null,
+  };
+}
+
+export async function createGoogleDriveTextFile(input: {
+  workspaceId: string;
+  name: string;
+  content: string;
+  mimeType?: string;
+  parentFolderId?: string | null;
+}): Promise<GoogleDriveFileResult> {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const metadata = {
+    name: input.name,
+    ...(input.parentFolderId ? { parents: [input.parentFolderId] } : {}),
+  };
+  const { boundary, body } = toMultipartBody([
+    {
+      headers: [
+        'Content-Disposition: form-data; name="metadata"',
+        "Content-Type: application/json; charset=UTF-8",
+      ].join("\r\n"),
+      body: JSON.stringify(metadata),
+    },
+    {
+      headers: [
+        `Content-Disposition: form-data; name="file"; filename="${input.name.replace(/"/g, "")}"`,
+        `Content-Type: ${input.mimeType ?? "text/plain"}`,
+      ].join("\r\n"),
+      body: input.content,
+    },
+  ]);
+  const response = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${encodeURIComponent(
+      googleFileFields(),
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const payload = (await readJson(response)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage("Google Drive upload", response, payload);
+    throw new Error(message);
+  }
+
+  return {
+    fileId: payload.id,
+    fileName: payload.name ?? input.name,
+    mimeType: payload.mimeType ?? input.mimeType ?? "text/plain",
+    webViewLink: payload.webViewLink ?? null,
+  };
+}
+
+export async function readGoogleSheetRange(input: {
+  workspaceId: string;
+  spreadsheetId: string;
+  range: string;
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      input.spreadsheetId,
+    )}/values/${encodeURIComponent(input.range)}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const message = await apiErrorMessage("Google Sheets read", response, payload);
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+export async function updateGoogleSheetRange(input: {
+  workspaceId: string;
+  spreadsheetId: string;
+  range: string;
+  values: unknown[][];
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      input.spreadsheetId,
+    )}/values/${encodeURIComponent(input.range)}?valueInputOption=USER_ENTERED`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        range: input.range,
+        majorDimension: "ROWS",
+        values: input.values,
+      }),
+    },
+  );
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const message = await apiErrorMessage("Google Sheets update", response, payload);
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+export async function batchUpdateGoogleSlides(input: {
+  workspaceId: string;
+  presentationId: string;
+  requests: Record<string, unknown>[];
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(
+      input.presentationId,
+    )}:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ requests: input.requests }),
+    },
+  );
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const message = await apiErrorMessage("Google Slides batchUpdate", response, payload);
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+export async function replaceGoogleSlidesText(input: {
+  workspaceId: string;
+  presentationId: string;
+  replacements: Array<{ find: string; replace: string }>;
+}) {
+  return batchUpdateGoogleSlides({
+    workspaceId: input.workspaceId,
+    presentationId: input.presentationId,
+    requests: input.replacements.map((replacement) => ({
+      replaceAllText: {
+        containsText: {
+          text: replacement.find,
+          matchCase: true,
+        },
+        replaceText: replacement.replace,
+      },
+    })),
+  });
+}
+
+export async function createNotionPage(input: {
+  workspaceId: string;
+  title: string;
+  content: string;
+  links?: Array<{ title: string; url: string }>;
+  parentPageId?: string;
+}): Promise<NotionMemoryResult> {
+  return createNotionMemoryPageFromRunArtifacts({
+    workspaceId: input.workspaceId,
+    runId: `tool-${Date.now()}`,
+    memoryTitle: input.title,
+    runSummary: input.content,
+    parentPageId: input.parentPageId,
+    runOutput: {
+      text: input.content,
+      connectorResults: (input.links ?? []).map((link) => ({
+        source: "artifact",
+        title: link.title,
+        url: link.url,
+        snippet: input.content,
+      })),
+    },
+  });
 }
 
 export async function createNotionMemoryPageFromRunArtifacts(

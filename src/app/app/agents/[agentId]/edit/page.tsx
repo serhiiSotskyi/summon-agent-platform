@@ -14,6 +14,7 @@ import {
 } from "@/lib/agents/schedules";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
+import { GENERIC_AGENT_TOOLS } from "@/lib/tools/definitions";
 import { updateAgentConfig } from "../../../actions";
 
 type Params = Promise<{ agentId: string }>;
@@ -296,6 +297,9 @@ export default async function EditAgentPage({
               <CardTitle>Tools</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Connectors
+              </p>
               {connectorCatalog.map((connector) => (
                 <label
                   className="flex cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-black/20 p-3 text-sm"
@@ -318,6 +322,36 @@ export default async function EditAgentPage({
                   </span>
                 </label>
               ))}
+              <p className="pt-2 text-xs uppercase tracking-[0.14em] text-zinc-500">
+                Agent tools
+              </p>
+              {GENERIC_AGENT_TOOLS.map((tool) => (
+                <label
+                  className="flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm"
+                  key={tool.key}
+                >
+                  <input
+                    className="mt-1 accent-emerald-300"
+                    defaultChecked={selectedTools.has(tool.key)}
+                    name="tools"
+                    type="checkbox"
+                    value={tool.key}
+                  />
+                  <span>
+                    <span className="block font-medium text-white">
+                      {tool.name}
+                    </span>
+                    <span className="mt-1 block leading-5 text-emerald-100/80">
+                      {tool.summary}
+                    </span>
+                  </span>
+                </label>
+              ))}
+              <Alert>
+                Reads, sandbox code, creating new files, copying templates, and
+                editing run-owned outputs are allowed; destructive changes still
+                require approval.
+              </Alert>
             </CardContent>
           </Card>
 

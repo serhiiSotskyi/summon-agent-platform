@@ -228,6 +228,7 @@ function readArtifacts(output: Prisma.JsonValue) {
           "webViewLink",
           "downloadUrl",
           "fileUrl",
+          "location",
         ]) || null,
       raw: JSON.stringify(entry),
     };
