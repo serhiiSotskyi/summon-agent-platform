@@ -86,6 +86,15 @@ enum RiskLevel {
   PROTECTED
 }
 
+enum ToolCallStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  BLOCKED
+  SKIPPED
+}
+
 model User {
   id                           String                @id @default(cuid())
   clerkUserId                  String                @unique
@@ -206,10 +215,52 @@ model AgentRun {
   agent            Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
   triggeredBy      User?             @relation("AgentRunTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
   approvalRequests ApprovalRequest[]
+  toolCalls        ToolCall[]
+  artifacts        AgentArtifact[]
 
   @@index([agentId, triggeredAt])
   @@index([status])
   @@index([retainedUntil])
+}
+
+model ToolCall {
+  id            String         @id @default(cuid())
+  agentRunId    String
+  connectorType String
+  toolName      String
+  status        ToolCallStatus @default(PENDING)
+  request       Json?
+  response      Json?
+  error         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  durationMs    Int?
+  metadata      Json?
+  loggedAt      DateTime       @default(now())
+  agentRun      AgentRun       @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+  artifacts     AgentArtifact[]
+
+  @@index([agentRunId])
+  @@index([agentRunId, status])
+  @@index([connectorType, toolName])
+}
+
+model AgentArtifact {
+  id           String       @id @default(cuid())
+  agentRunId   String
+  toolCallId   String?
+  artifactType String
+  name         String
+  location     String?
+  mimeType     String?
+  payload      Json?
+  createdAt    DateTime     @default(now())
+  agentRun     AgentRun     @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+  toolCall     ToolCall?    @relation(fields: [toolCallId], references: [id], onDelete: SetNull)
+
+  @@index([agentRunId])
+  @@index([agentRunId, artifactType])
+  @@index([toolCallId])
 }
 
 model ConnectorCredential {

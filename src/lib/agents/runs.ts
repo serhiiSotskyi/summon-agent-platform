@@ -15,6 +15,12 @@ import {
   type ApprovedActionJob,
   type ManualAgentRunJob,
 } from "@/lib/queue/agent-runs";
+import {
+  agentWantsQbrTool,
+  buildQbrPromptSection,
+  executeQbrGenerateDeckTool,
+  QBR_GENERATE_DECK_TOOL,
+} from "@/lib/tools/qbr";
 
 type CreateManualAgentRunInput = {
   agentId: string;
@@ -112,15 +118,17 @@ function summarizeOutput(text: string) {
 function buildReadOnlyRunPrompt({
   agentName,
   connectorContext,
+  toolExecutionContext,
   tools,
 }: {
   agentName: string;
   connectorContext: Awaited<ReturnType<typeof collectReadOnlyConnectorContext>>;
+  toolExecutionContext?: string;
   tools: string[];
 }) {
   return [
     `Run "${agentName}" using the read-only connector evidence below.`,
-    "External read-only tools may have been called. Do not claim any write, mutation, send, budget edit, or campaign change happened.",
+    "External tools may have been called. Do not claim any budget edit, campaign change, delete action, or external send happened unless tool output explicitly says so.",
     "Produce a concise operational result for a non-technical Summon team member.",
     "Base the answer on the evidence. Cite source titles and URLs from connector records when available.",
     "If a connector is blocked or errored, say exactly what is missing instead of guessing.",
@@ -138,6 +146,8 @@ function buildReadOnlyRunPrompt({
     `Connected tools: ${connectorContext.connectedTools.map(connectorName).join(", ") || "none"}.`,
     `Missing tools: ${connectorContext.missingTools.map(connectorName).join(", ") || "none"}.`,
     "",
+    toolExecutionContext ?? "",
+    toolExecutionContext ? "" : "",
     "Connector evidence:",
     JSON.stringify(connectorContext.results, null, 2),
   ].join("\n");
@@ -347,6 +357,13 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       workspaceId: job.workspaceId,
       tools,
     });
+    const qbrOutput = agentWantsQbrTool(run.agent)
+      ? await executeQbrGenerateDeckTool({
+          agentRunId: run.id,
+          workspaceId: job.workspaceId,
+          agent: run.agent,
+        })
+      : null;
     const provider = llmProviderSchema.catch("openai").parse(run.agent.llmProvider);
     const result = await withTimeout(
       createLlmClient(provider).generateText({
@@ -358,10 +375,14 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
         prompt: buildReadOnlyRunPrompt({
           agentName: run.agent.name,
           connectorContext,
+          toolExecutionContext: buildQbrPromptSection(qbrOutput),
           tools,
         }),
       }),
       getAgentRunTimeoutMs(),
+    );
+    const approvalCandidateTools = tools.filter(
+      (tool) => tool !== QBR_GENERATE_DECK_TOOL,
     );
     const approval = await createApprovalIfNeeded({
       agentId: run.agent.id,
@@ -369,11 +390,11 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       workspaceId: job.workspaceId,
       requestedById: job.triggeredById,
       llmOutput: result.text,
-      tools,
+      tools: approvalCandidateTools,
       actionPermissionMode: run.agent.actionPermissionMode,
     });
     const output: Prisma.InputJsonObject = {
-      mode: "read_only",
+      mode: qbrOutput ? "tool_execution" : "read_only",
       provider: result.provider,
       model: result.model,
       usage: (result.usage ?? null) as Prisma.InputJsonValue,
@@ -389,9 +410,22 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       missingTools: connectorContext.missingTools,
       connectorResults:
         connectorContext.results as unknown as Prisma.InputJsonValue,
-      blockers: connectorContext.blockers,
+      blockers: [...connectorContext.blockers, ...(qbrOutput?.blockers ?? [])],
+      qbr: qbrOutput
+        ? ({
+            referenceDeckUrl: qbrOutput.referenceDeckUrl,
+            manifest: qbrOutput.manifest,
+            googleSlides: qbrOutput.googleSlides,
+            notionMemory: qbrOutput.notionMemory,
+            blockers: qbrOutput.blockers,
+          } as unknown as Prisma.InputJsonObject)
+        : null,
+      toolCalls: qbrOutput?.toolCalls ?? [],
+      artifacts: qbrOutput?.artifacts ?? [],
       approvalRequestId: approval?.id ?? null,
-      note: "Read-only connector calls may have been executed. No external writes, sends, budget edits, or campaign changes were made.",
+      note: qbrOutput
+        ? "Allowed create/copy/write tools may have produced new artifacts. No destructive actions, sends, budget edits, or campaign changes were made."
+        : "Read-only connector calls may have been executed. No external writes, sends, budget edits, or campaign changes were made.",
     };
 
     return db.agentRun.update({

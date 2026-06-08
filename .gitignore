@@ -23,6 +23,8 @@
 # misc
 .DS_Store
 *.pem
+__pycache__/
+*.py[cod]
 
 # debug
 npm-debug.log*
@@ -39,6 +41,10 @@ yarn-error.log*
 
 # railway
 .railway
+
+# generated agent/tool outputs
+/sandbox/qbr/output/
+/sandbox/qbr/charts/
 
 # typescript
 *.tsbuildinfo

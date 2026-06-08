@@ -49,11 +49,16 @@ export const connectorCatalog: ConnectorCatalogItem[] = [
     key: "google-drive",
     name: "Google Drive",
     provider: "google",
-    summary: "Read-only Docs, Sheets, Slides, folders, and shared files.",
-    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
-    accessModeLabel: "Read-only OAuth",
+    summary: "Read and write Docs, Sheets, Slides, folders, and Drive files.",
+    scopes: [
+      "https://www.googleapis.com/auth/documents",
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/presentations",
+      "https://www.googleapis.com/auth/drive",
+    ],
+    accessModeLabel: "Write-capable OAuth",
     accessModeDescription:
-      "Requests only the Google Drive read-only scope for listing and exporting files.",
+      "Requests write-capable access so agents can read, copy, create, and update Drive files when policy allows it.",
     oauthPath: "/api/connectors/google/start?source=google-drive",
   },
 ];

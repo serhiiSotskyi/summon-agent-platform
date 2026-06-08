@@ -7,6 +7,7 @@ import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { DEFAULT_SCHEDULE_TIMEZONE } from "@/lib/agents/schedules";
+import { QBR_GENERATE_DECK_TOOL } from "@/lib/tools/qbr";
 import { createAgentDraft } from "../../actions";
 
 type SearchParams = Promise<{ workspace?: string; demo?: string }>;
@@ -170,6 +171,23 @@ export default async function NewAgentPage({
                   </span>
                 </label>
               ))}
+              <label className="flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm">
+                <input
+                  className="mt-1 accent-emerald-300"
+                  name="tools"
+                  type="checkbox"
+                  value={QBR_GENERATE_DECK_TOOL}
+                />
+                <span>
+                  <span className="block font-medium text-white">
+                    QBR deck generation
+                  </span>
+                  <span className="mt-1 block leading-5 text-emerald-100/80">
+                    Run approved Python metrics code, generate a PPTX, import it
+                    as Google Slides, and add the result to Notion memory.
+                  </span>
+                </span>
+              </label>
             </CardContent>
           </Card>
 

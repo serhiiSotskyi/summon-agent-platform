@@ -73,6 +73,175 @@ function readOutputMode(output: Prisma.JsonValue) {
   return null;
 }
 
+type OutputRecord = Record<string, unknown>;
+
+function toRecord(value: unknown): value is OutputRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readOutputArray(output: Prisma.JsonValue, keys: string[]) {
+  if (!toRecord(output)) {
+    return [];
+  }
+
+  const results: unknown[] = [];
+
+  keys.forEach((key) => {
+    const candidate = output[key];
+    if (Array.isArray(candidate)) {
+      results.push(...candidate);
+    }
+  });
+
+  return results;
+}
+
+function readOutputObjectArray(output: Prisma.JsonValue, keys: string[]) {
+  return readOutputArray(output, keys).filter(
+    (item): item is OutputRecord | string =>
+      (item !== null && typeof item === "object" && !Array.isArray(item)) ||
+      typeof item === "string",
+  ) as Array<OutputRecord | string>;
+}
+
+function firstText(record: OutputRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function readToolCalls(output: Prisma.JsonValue) {
+  const entries = readOutputObjectArray(output, [
+    "toolCalls",
+    "tool_calls",
+    "toolCallLog",
+    "tool_call_log",
+    "toolExecutions",
+    "tool_execution_log",
+  ]);
+
+  return entries.map((entry, index) => {
+    if (typeof entry === "string") {
+      return {
+        id: `tool-call-${index}`,
+        name: entry,
+        summary: null,
+        status: "completed",
+      };
+    }
+
+    const functionName =
+      toRecord(entry.function) && firstText(entry.function as OutputRecord, ["name"]);
+
+    const toolName =
+      firstText(entry, [
+        "toolName",
+        "tool",
+        "name",
+        "type",
+        "action",
+      ]) ?? "Unnamed tool";
+
+    return {
+      id:
+        firstText(entry, ["id", "callId", "toolCallId"]) ||
+        `tool-call-${index}`,
+      name: functionName ? `${toolName} (${functionName})` : toolName,
+      connector: firstText(entry, ["connector", "provider", "source", "service"]),
+      status: firstText(entry, ["status", "state", "result"]) || "completed",
+      summary: firstText(entry, ["summary", "description", "details", "output"]),
+      args: entry.args ?? entry.input ?? entry.parameters,
+      result: entry.result,
+    };
+  });
+}
+
+function isArtifactKey(key: string) {
+  return /artifact|attachment|file|document/.test(key);
+}
+
+function collectArtifactValues(output: Prisma.JsonValue) {
+  if (!toRecord(output)) {
+    return [];
+  }
+
+  const direct = readOutputObjectArray(output, [
+    "artifacts",
+    "generatedArtifacts",
+    "artifactList",
+    "attachments",
+    "files",
+  ]);
+
+  const inferred: unknown[] = Object.entries(output).flatMap(([key, value]) => {
+    if (isArtifactKey(key) && Array.isArray(value)) {
+      return value;
+    }
+
+    return [];
+  });
+
+  return [...direct, ...inferred].filter(
+    (item): item is OutputRecord | string =>
+      (item !== null && typeof item === "object" && !Array.isArray(item)) ||
+      typeof item === "string",
+  ) as Array<OutputRecord | string>;
+}
+
+function readArtifacts(output: Prisma.JsonValue) {
+  const entries = collectArtifactValues(output);
+
+  return entries.map((entry, index) => {
+    if (typeof entry === "string") {
+      return {
+        id: `artifact-${index}`,
+        label: entry,
+        title: entry,
+        type: null,
+        status: "ready",
+        summary: null,
+        url: null,
+        raw: JSON.stringify(entry),
+      };
+    }
+
+    return {
+      id:
+        firstText(entry, ["id", "artifactId", "fileId", "name"]) ||
+        `artifact-${index}`,
+      label: firstText(entry, ["name", "title", "label", "filename", "fileName"]) ||
+        `Artifact ${index + 1}`,
+      title: firstText(entry, ["title", "name", "label"]) || `Artifact ${index + 1}`,
+      type: firstText(entry, ["type", "mimeType", "contentType"]),
+      status: firstText(entry, ["status", "state"]) || "ready",
+      summary: firstText(entry, ["summary", "description", "notes", "text"]),
+      url:
+        firstText(entry, [
+          "url",
+          "link",
+          "viewUrl",
+          "webViewLink",
+          "downloadUrl",
+          "fileUrl",
+        ]) || null,
+      raw: JSON.stringify(entry),
+    };
+  });
+}
+
+function jsonPreview(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
+}
+
 function readConnectorResults(output: Prisma.JsonValue) {
   if (
     output &&
@@ -187,6 +356,8 @@ export default async function RunDetailPage({
   const missingTools = readMissingTools(run.output);
   const approvalDecision = readApprovalDecision(run.output);
   const costMetadata = readCostMetadata(run.output);
+  const toolCalls = readToolCalls(run.output);
+  const artifacts = readArtifacts(run.output);
   const isActiveRun = run.status === "QUEUED" || run.status === "RUNNING";
 
   return (
@@ -442,6 +613,105 @@ export default async function RunDetailPage({
             </div>
           </CardContent>
         </Card>
+      ) : null}
+
+      {(toolCalls.length > 0 || artifacts.length > 0) ? (
+        <div className="mt-5 grid gap-5 xl:grid-cols-2">
+          {toolCalls.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Tool calls</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {toolCalls.map((toolCall) => (
+                  <div
+                    className="space-y-3 rounded-md border border-white/10 bg-black/20 p-4"
+                    key={toolCall.id}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-white">{toolCall.name}</p>
+                      <StatusBadge status={toolCall.status ?? "completed"} />
+                    </div>
+                    <div className="space-y-2 text-sm leading-6 text-zinc-300">
+                      {toolCall.connector ? (
+                        <p>
+                          Connector: <span className="text-zinc-200">{toolCall.connector}</span>
+                        </p>
+                      ) : null}
+                      {toolCall.summary ? <p>{toolCall.summary}</p> : null}
+                      {toolCall.args ? (
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                            Arguments
+                          </p>
+                          <pre className="mt-2 whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-zinc-300">
+                            {jsonPreview(toolCall.args)}
+                          </pre>
+                        </div>
+                      ) : null}
+                      {toolCall.result ? (
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                            Result
+                          </p>
+                          <pre className="mt-2 whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-zinc-300">
+                            {jsonPreview(toolCall.result)}
+                          </pre>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {artifacts.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Artifacts</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {artifacts.map((artifact) => (
+                  <div
+                    className="rounded-md border border-white/10 bg-black/20 p-4"
+                    key={artifact.id}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium text-white">{artifact.label}</p>
+                      <StatusBadge status={artifact.status ?? "ready"} />
+                    </div>
+                    <div className="mt-2 space-y-2 text-sm leading-6 text-zinc-300">
+                      {artifact.title !== artifact.label ? (
+                        <p>{artifact.title}</p>
+                      ) : null}
+                      {artifact.type ? (
+                        <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+                          Type: {artifact.type}
+                        </p>
+                      ) : null}
+                      {artifact.summary ? <p>{artifact.summary}</p> : null}
+                      {artifact.url ? (
+                        <Link
+                          className="inline-flex text-sm text-emerald-100 underline-offset-4 hover:underline"
+                          href={artifact.url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open artifact
+                        </Link>
+                      ) : (
+                        <pre className="whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-3 text-xs text-zinc-300">
+                          {artifact.raw}
+                        </pre>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
       ) : null}
 
       {missingTools.length > 0 || run.approvalRequests.length > 0 ? (

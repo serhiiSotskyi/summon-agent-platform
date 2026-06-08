@@ -11,9 +11,30 @@ type ModelPrice = {
   longContextThresholdTokens?: number;
 };
 
-export const LLM_PRICING_VERSION = "2026-06-04";
+export const LLM_PRICING_VERSION = "2026-06-08";
 
 const MODEL_PRICES: ModelPrice[] = [
+  {
+    provider: "openai",
+    model: "gpt-5.5",
+    inputPerMillionUsd: 5,
+    outputPerMillionUsd: 30,
+    longContextInputPerMillionUsd: 10,
+    longContextOutputPerMillionUsd: 45,
+    longContextThresholdTokens: 272_000,
+  },
+  {
+    provider: "openai",
+    model: "gpt-5.4",
+    inputPerMillionUsd: 2.5,
+    outputPerMillionUsd: 15,
+  },
+  {
+    provider: "openai",
+    model: "gpt-5.4-mini",
+    inputPerMillionUsd: 0.75,
+    outputPerMillionUsd: 4.5,
+  },
   {
     provider: "openai",
     model: "gpt-4.1",
