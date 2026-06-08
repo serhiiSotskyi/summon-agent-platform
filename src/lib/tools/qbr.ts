@@ -3,7 +3,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Prisma, type Agent } from "@prisma/client";
-import { runQbrReport } from "../../../sandbox/qbr/executor";
+import { runQbrMetricsCompile, runQbrReport } from "../../../sandbox/qbr/executor";
 import { createNotionMemoryPageFromRunArtifacts, importPptxAsGoogleSlides } from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
 import { getEnv } from "@/lib/env";
@@ -44,11 +44,26 @@ type QbrManifest = {
   metrics: Record<string, unknown>;
 };
 
+type QbrCalculationBlueprintSummary = {
+  outputJsonPath: string;
+  mode: "calculation_blueprint";
+  slideCount: number;
+  rowCount: number;
+  referenceDeckUrl?: string;
+  rendererInstructions?: string[];
+};
+
+type QbrCalculationBlueprintRead = {
+  summary: QbrCalculationBlueprintSummary;
+  payload: Record<string, unknown>;
+};
+
 type QbrToolOutput = {
   mode: "tool_execution";
   toolName: typeof QBR_GENERATE_DECK_TOOL;
   referenceDeckUrl: string;
   manifest: QbrManifest;
+  calculationBlueprint: QbrCalculationBlueprintSummary | null;
   googleSlides: {
     fileId: string;
     webViewLink: string | null;
@@ -145,14 +160,17 @@ async function createArtifact(input: {
   });
 }
 
-function artifactOutput(artifact: Awaited<ReturnType<typeof createArtifact>>) {
+function artifactOutput(
+  artifact: Awaited<ReturnType<typeof createArtifact>>,
+  options: { includePayload?: boolean } = {},
+) {
   return jsonObject({
     id: artifact.id,
     name: artifact.name,
     type: artifact.artifactType,
     mimeType: artifact.mimeType,
     location: artifact.location,
-    payload: artifact.payload,
+    payload: options.includePayload === false ? undefined : artifact.payload,
     status: "ready",
   });
 }
@@ -190,6 +208,28 @@ function readKpiValue(manifest: QbrManifest, key: string) {
       (item.key === key || item.label === key),
   );
   return typeof match?.value === "string" ? match.value : "n/a";
+}
+
+async function readCalculationBlueprint(
+  outputJsonPath: string,
+): Promise<QbrCalculationBlueprintRead> {
+  const payload = JSON.parse(await readFile(outputJsonPath, "utf8")) as Record<string, unknown>;
+  const rendererInstructions = Array.isArray(payload.rendererInstructions)
+    ? payload.rendererInstructions.filter((item): item is string => typeof item === "string")
+    : undefined;
+
+  return {
+    payload,
+    summary: {
+      outputJsonPath,
+      mode: "calculation_blueprint",
+      slideCount: Array.isArray(payload.slideBlueprint) ? payload.slideBlueprint.length : 0,
+      rowCount: typeof payload.rowCount === "number" ? payload.rowCount : 0,
+      referenceDeckUrl:
+        typeof payload.referenceDeckUrl === "string" ? payload.referenceDeckUrl : undefined,
+      rendererInstructions,
+    },
+  };
 }
 
 function qbrRunSummary(manifest: QbrManifest, blockers: string[]) {
@@ -248,6 +288,22 @@ export async function executeQbrGenerateDeckTool(input: {
   });
 
   try {
+    const calculationResult = await runQbrMetricsCompile({
+      inputCsv: csvPath,
+      outputDir,
+      calculationJson: "qbr_calculation_blueprint.json",
+      clientId: "wendy_wu",
+      python: getEnv("QBR_PYTHON_BIN") ?? getEnv("PYTHON_BIN") ?? "python3",
+      ...reportPeriod,
+    });
+    if (calculationResult.status === "error") {
+      throw new Error(calculationResult.error);
+    }
+    const calculationBlueprintRecord = await readCalculationBlueprint(
+      calculationResult.output_json,
+    );
+    const calculationBlueprint = calculationBlueprintRecord.summary;
+
     const result = await runQbrReport({
       inputCsv: csvPath,
       outputDir,
@@ -263,6 +319,24 @@ export async function executeQbrGenerateDeckTool(input: {
     const manifest = result as QbrManifest;
     const blockers: string[] = [];
     const artifacts: Prisma.InputJsonValue[] = [
+      artifactOutput(
+        await createArtifact({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          artifactType: "calculation_blueprint_json",
+          name: "QBR calculation blueprint JSON",
+          location: calculationBlueprint.outputJsonPath,
+          mimeType: "application/json",
+          payload: {
+            ...(await fileMetadata(calculationBlueprint.outputJsonPath)),
+            mode: calculationBlueprint.mode,
+            slideCount: calculationBlueprint.slideCount,
+            referenceDeckUrl: calculationBlueprint.referenceDeckUrl,
+            blueprint: calculationBlueprintRecord.payload,
+          },
+        }),
+        { includePayload: false },
+      ),
       artifactOutput(
         await createArtifact({
           agentRunId: input.agentRunId,
@@ -377,6 +451,7 @@ export async function executeQbrGenerateDeckTool(input: {
 
     const response = {
       manifest,
+      calculationBlueprint,
       googleSlides,
       notionMemory,
       blockers,
@@ -396,19 +471,21 @@ export async function executeQbrGenerateDeckTool(input: {
       toolName: QBR_GENERATE_DECK_TOOL,
       referenceDeckUrl: DEFAULT_REFERENCE_DECK_URL,
       manifest,
+      calculationBlueprint,
       googleSlides,
       notionMemory,
       blockers,
       toolCalls: [
         toolCallOutput({
           id: toolCall.id,
-        toolName: QBR_GENERATE_DECK_TOOL,
-        status: "SUCCEEDED",
-        summary: qbrRunSummary(manifest, blockers),
+          toolName: QBR_GENERATE_DECK_TOOL,
+          status: "SUCCEEDED",
+          summary: qbrRunSummary(manifest, blockers),
           args: { csvPath, clientId: "wendy_wu", ...reportPeriod },
           result: {
             metrics: manifest.metrics,
             quarter: manifest.quarter,
+            calculationBlueprint,
             googleSlides,
             notionMemory,
             blockers,
@@ -443,6 +520,7 @@ export function buildQbrPromptSection(output: QbrToolOutput | null) {
     JSON.stringify(
       {
         metrics: output.manifest.metrics,
+        calculationBlueprint: output.calculationBlueprint,
         googleSlides: output.googleSlides,
         notionMemory: output.notionMemory,
         blockers: output.blockers,
