@@ -19,7 +19,7 @@ import {
 } from "@/lib/tools/definitions";
 import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
 
-const MAX_TOOL_ITERATIONS = 3;
+const MAX_TOOL_ITERATIONS = 5;
 const MAX_TOOL_CALLS_PER_ITERATION = 5;
 
 type ToolLoopAgent = Pick<
@@ -98,6 +98,122 @@ function asObjectArray(value: unknown) {
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
+}
+
+function compactText(value: unknown, maxLength = 3000) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}\n...[truncated ${value.length - maxLength} chars]`;
+}
+
+function compactGeneratedFileForPrompt(value: unknown) {
+  const file = asRecord(value);
+  const payload = asRecord(file.payload);
+  const name = asString(file.name, "artifact");
+  const mimeType = asString(file.mimeType);
+  const preview = asString(payload.contentPreview);
+  const shouldKeepPreview =
+    name.toLowerCase().endsWith(".json") ||
+    name.toLowerCase().includes("metrics") ||
+    mimeType.includes("json");
+
+  return {
+    id: file.id,
+    type: file.type,
+    name,
+    location: file.location,
+    mimeType: file.mimeType,
+    status: file.status,
+    payload: {
+      ...payload,
+      contentPreview: shouldKeepPreview && preview ? compactText(preview, 8000) : undefined,
+    },
+  };
+}
+
+function compactToolResultForPrompt(value: unknown) {
+  const record = asRecord(value);
+  const toolName = asString(record.toolName);
+  if (!toolName) {
+    return value;
+  }
+
+  const result = asRecord(record.result);
+  const base = {
+    id: record.id,
+    toolName,
+    status: record.status,
+    input: record.input,
+    error: record.error,
+    artifacts: asObjectArray(record.artifacts).map(compactGeneratedFileForPrompt),
+  };
+
+  if (toolName === "python.run") {
+    return {
+      ...base,
+      result: {
+        command: result.command,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        stdout: compactText(result.stdout, 2000),
+        stderr: compactText(result.stderr, 2000),
+        files: asObjectArray(result.files).map(compactGeneratedFileForPrompt),
+      },
+    };
+  }
+
+  if (toolName === "google.slides.replaceText") {
+    return {
+      ...base,
+      result: {
+        presentationId: result.presentationId,
+        replacementResults: result.replacementResults,
+      },
+    };
+  }
+
+  if (
+    toolName === "google.slides.copyTemplate" ||
+    toolName === "google.drive.copyFile" ||
+    toolName === "google.drive.createTextFile"
+  ) {
+    return {
+      ...base,
+      result: {
+        fileId: result.fileId,
+        presentationId: result.presentationId,
+        fileName: result.fileName,
+        webViewLink: result.webViewLink,
+        mimeType: result.mimeType,
+      },
+    };
+  }
+
+  if (toolName === "notion.createPage") {
+    return {
+      ...base,
+      result: {
+        pageId: result.pageId,
+        pageUrl: result.pageUrl,
+      },
+    };
+  }
+
+  return {
+    ...base,
+    result,
+  };
+}
+
+function compactToolResultsForPrompt(results: unknown[]) {
+  return results.map(compactToolResultForPrompt);
 }
 
 function extractJsonObject(text: string) {
@@ -228,6 +344,8 @@ function buildPlannerPrompt(input: {
     "Allowed without approval: reading data, running helper code in the sandbox, creating new files, copying templates, editing files created/copied in this same run, and creating Notion memory pages.",
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
+    "For google.slides.replaceText, match exact visible text inside a single text run. If a KPI value and label are separate, replace the standalone value, for example \"5,682\" instead of \"5,682 Total Leads\".",
+    "After google.slides.replaceText, inspect replacementResults. If a required replacement has occurrencesChanged: 0, issue another replaceText with a narrower exact text or use batchUpdate against the copied deck.",
     "For Python work, use uploaded helper files or provide short generated Python in python.run.code.",
     "If no tool is needed, return {\"toolCalls\":[]}.",
     "",
@@ -241,7 +359,7 @@ function buildPlannerPrompt(input: {
     input.basePrompt,
     "",
     "Prior tool results:",
-    JSON.stringify(input.priorResults, null, 2),
+    JSON.stringify(compactToolResultsForPrompt(input.priorResults), null, 2),
     "",
     "JSON shape:",
     JSON.stringify(
@@ -269,7 +387,7 @@ function buildFinalPrompt(input: {
     input.basePrompt,
     "",
     "Tool execution results:",
-    JSON.stringify(input.toolResults, null, 2),
+    JSON.stringify(compactToolResultsForPrompt(input.toolResults), null, 2),
     "",
     "Write the final response for the Summon team.",
     "Include evidence used, generated artifacts with links, what was not verified, recommendations, and any blocked protected actions.",
@@ -619,11 +737,28 @@ async function executeOneTool(input: {
         find: asString(replacement.find),
         replace: asString(replacement.replace),
       })).filter((replacement) => replacement.find);
-      result = await replaceGoogleSlidesText({
+      const replaceResult = await replaceGoogleSlidesText({
         workspaceId: input.workspaceId,
         presentationId,
         replacements,
       });
+      const replies = asObjectArray(asRecord(replaceResult).replies);
+      result = {
+        ...asRecord(replaceResult),
+        replacementResults: replacements.map((replacement, index) => {
+          const reply = asRecord(replies[index]);
+          const replaceAllText = asRecord(reply.replaceAllText);
+          const occurrencesChanged =
+            typeof replaceAllText.occurrencesChanged === "number"
+              ? replaceAllText.occurrencesChanged
+              : 0;
+
+          return {
+            ...replacement,
+            occurrencesChanged,
+          };
+        }),
+      };
     }
 
     if (toolName === "google.slides.batchUpdate") {
