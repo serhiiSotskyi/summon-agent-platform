@@ -475,6 +475,11 @@ function textElementsForSlide(slide: Record<string, unknown>) {
     .map((element) => ({
       objectId: asString(element.objectId),
       text: asString(element.text),
+      source: asString(element.source, "shape"),
+      rowIndex:
+        typeof element.rowIndex === "number" ? element.rowIndex : undefined,
+      columnIndex:
+        typeof element.columnIndex === "number" ? element.columnIndex : undefined,
     }))
     .filter((element) => element.objectId && element.text);
 }
@@ -598,22 +603,39 @@ function commentaryForReportSlide(
     .join("\n");
 }
 
-function setShapeTextRequests(objectId: string, text: string) {
-  return [
-    {
-      deleteText: {
-        objectId,
-        textRange: { type: "ALL" },
+function replaceSlideTextRequest(slideObjectId: string, find: string, replace: string) {
+  return {
+    replaceAllText: {
+      containsText: {
+        text: find,
+        matchCase: true,
       },
+      replaceText: replace,
+      pageObjectIds: [slideObjectId],
     },
-    {
-      insertText: {
-        objectId,
-        insertionIndex: 0,
-        text,
-      },
-    },
-  ];
+  };
+}
+
+function pushSlideScopedReplacement(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  slideObjectId: string,
+  find: string,
+  replace: string,
+) {
+  const trimmedFind = find.trim();
+  const trimmedReplace = replace.trim();
+  if (!trimmedFind || !trimmedReplace || trimmedFind === trimmedReplace) {
+    return;
+  }
+
+  const key = `${slideObjectId}\u0000${trimmedFind}`;
+  if (seen.has(key)) {
+    return;
+  }
+
+  seen.add(key);
+  requests.push(replaceSlideTextRequest(slideObjectId, trimmedFind, trimmedReplace));
 }
 
 function metricDeckBatchRequests(results: unknown[]) {
@@ -626,31 +648,52 @@ function metricDeckBatchRequests(results: unknown[]) {
   const readResult = latestSlidesReadResult(results);
   const slides = asObjectArray(readResult.slides);
   const requests: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
 
   for (const slide of slides) {
     const scope = metricScopeForReportSlide(slide, metrics);
     if (!scope) {
       continue;
     }
+    const slideObjectId = asString(slide.slideObjectId);
+    if (!slideObjectId) {
+      continue;
+    }
 
     const elements = textElementsForSlide(slide);
-    const metricElements = elements.filter((element) => isStandaloneMetricText(element.text));
+    const metricElements = elements.filter(
+      (element) =>
+        element.source !== "table_cell" && isStandaloneMetricText(element.text),
+    );
     const values = reportMetricValueSequence(scope.metrics, scope.kind);
 
     metricElements.slice(0, values.length).forEach((element, index) => {
       const nextText = values[index];
       if (nextText && element.text !== nextText) {
-        requests.push(...setShapeTextRequests(element.objectId, nextText));
+        pushSlideScopedReplacement(
+          requests,
+          seen,
+          slideObjectId,
+          element.text,
+          nextText,
+        );
       }
     });
 
     if (scope.kind === "summary") {
       const commentaryElement = elements
+        .filter((element) => element.source !== "table_cell")
         .filter((element) => element.text.length > 120)
         .at(-1);
       const commentary = commentaryForReportSlide(scope.name, scope.metrics, overall);
       if (commentaryElement && commentary && commentaryElement.text !== commentary) {
-        requests.push(...setShapeTextRequests(commentaryElement.objectId, commentary));
+        pushSlideScopedReplacement(
+          requests,
+          seen,
+          slideObjectId,
+          commentaryElement.text,
+          commentary,
+        );
       }
     }
   }

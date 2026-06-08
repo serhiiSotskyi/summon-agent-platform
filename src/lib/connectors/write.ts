@@ -671,6 +671,19 @@ export async function readGoogleSlidesText(input: {
             }>;
           };
         };
+        table?: {
+          tableRows?: Array<{
+            tableCells?: Array<{
+              text?: {
+                textElements?: Array<{
+                  textRun?: {
+                    content?: string;
+                  };
+                }>;
+              };
+            }>;
+          }>;
+        };
       }>;
     }>;
   };
@@ -682,16 +695,41 @@ export async function readGoogleSlidesText(input: {
       slideIndex: slideIndex + 1,
       slideObjectId: slide.objectId ?? null,
       textElements: (slide.pageElements ?? [])
-        .map((element) => {
-          const text = (element.shape?.text?.textElements ?? [])
+        .flatMap((element) => {
+          const shapeText = (element.shape?.text?.textElements ?? [])
             .map((textElement) => textElement.textRun?.content ?? "")
             .join("")
             .trim();
 
-          return {
-            objectId: element.objectId ?? null,
-            text,
-          };
+          const shapeElements = shapeText
+            ? [
+                {
+                  objectId: element.objectId ?? null,
+                  text: shapeText,
+                  source: "shape",
+                },
+              ]
+            : [];
+
+          const tableElements = (element.table?.tableRows ?? []).flatMap(
+            (row, rowIndex) =>
+              (row.tableCells ?? []).map((cell, columnIndex) => {
+                const text = (cell.text?.textElements ?? [])
+                  .map((textElement) => textElement.textRun?.content ?? "")
+                  .join("")
+                  .trim();
+
+                return {
+                  objectId: element.objectId ?? null,
+                  text,
+                  source: "table_cell",
+                  rowIndex,
+                  columnIndex,
+                };
+              }),
+          );
+
+          return [...shapeElements, ...tableElements];
         })
         .filter((element) => element.text),
     })),
