@@ -666,10 +666,12 @@ function metricDeckBatchRequests(results: unknown[]) {
         element.source !== "table_cell" && isStandaloneMetricText(element.text),
     );
     const values = reportMetricValueSequence(scope.metrics, scope.kind);
+    let metricReplacementCount = 0;
 
     metricElements.slice(0, values.length).forEach((element, index) => {
       const nextText = values[index];
       if (nextText && element.text !== nextText) {
+        metricReplacementCount += 1;
         pushSlideScopedReplacement(
           requests,
           seen,
@@ -680,7 +682,7 @@ function metricDeckBatchRequests(results: unknown[]) {
       }
     });
 
-    if (scope.kind === "summary") {
+    if (scope.kind === "summary" && metricReplacementCount > 0) {
       const commentaryElement = elements
         .filter((element) => element.source !== "table_cell")
         .filter((element) => element.text.length > 120)
