@@ -33,6 +33,7 @@ type CreateScheduledAgentRunInput = {
 };
 
 const DEFAULT_AGENT_RUN_TIMEOUT_MS = 600_000;
+const CONNECTOR_CONTEXT_TIMEOUT_MS = 45_000;
 
 function normalizeTools(tools: Prisma.JsonValue) {
   if (!Array.isArray(tools)) {
@@ -112,6 +113,27 @@ function summarizeOutput(text: string) {
   return normalized.length > 320
     ? `${normalized.slice(0, 317).trimEnd()}...`
     : normalized;
+}
+
+function connectorTimeoutContext(tools: string[], error: unknown) {
+  const message =
+    error instanceof Error ? error.message : "Connector context timed out.";
+  return {
+    connectedTools: [],
+    missingTools: tools,
+    results: [
+      {
+        connectorType: "connector-context",
+        connectorName: "Connector context",
+        status: "error" as const,
+        summary:
+          "Read-only connector context was skipped because it did not finish within the run timeout.",
+        blockers: [message],
+        records: [],
+      },
+    ],
+    blockers: [message],
+  };
 }
 
 function buildReadOnlyRunPrompt({
@@ -366,10 +388,13 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
 
     const tools = normalizeTools(run.agent.tools);
     const agentFilesContext = buildAgentFilesPromptSection(run.agent.files);
-    const connectorContext = await collectReadOnlyConnectorContext({
-      workspaceId: job.workspaceId,
-      tools,
-    });
+    const connectorContext = await withTimeout(
+      collectReadOnlyConnectorContext({
+        workspaceId: job.workspaceId,
+        tools,
+      }),
+      CONNECTOR_CONTEXT_TIMEOUT_MS,
+    ).catch((error) => connectorTimeoutContext(tools, error));
     const provider = llmProviderSchema.catch("openai").parse(run.agent.llmProvider);
     const systemPrompt = [
       SUMMON_MEMORY_SYSTEM_INSTRUCTION,
