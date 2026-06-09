@@ -424,6 +424,20 @@ function hasPassingDeckAudit(results: unknown[]) {
   return asRecord(audit?.result).passed === true;
 }
 
+function hasFailedDeckAudit(results: unknown[]) {
+  const audit = latestSuccessfulToolResult(results, "google.slides.auditDeck");
+  return Boolean(audit) && asRecord(audit?.result).passed === false;
+}
+
+function successfulToolCount(results: unknown[], toolName: GenericAgentToolKey) {
+  return successfulToolResults(results).filter((result) => result.toolName === toolName)
+    .length;
+}
+
+function latestSuccessfulToolName(results: unknown[]) {
+  return asString(successfulToolResults(results).at(-1)?.toolName);
+}
+
 function missingWorkflowOutcomes(input: {
   requirements: WorkflowRequirementState;
   toolResults: unknown[];
@@ -568,19 +582,7 @@ function reportMetadataFromArtifact(reportData: Record<string, unknown>) {
 }
 
 function expectedReportValues(reportData: Record<string, unknown>) {
-  const overallKpis = asRecord(reportData.overall_kpis);
-  const overall =
-    Object.keys(overallKpis).length > 0 ? overallKpis : asRecord(reportData.overall);
-  const values = [
-    formatIntegerMetric(overall.sales_leads ?? overall.leads),
-    formatIntegerMetric(overall.clicks),
-    formatPercentMetric(overall.ctr),
-    formatPercentMetric(overall.cvr),
-    formatDecimalCurrencyMetric(overall.cpl),
-    formatCurrencyMetric(overall.cost ?? overall.spend),
-  ].filter(Boolean);
-
-  return Array.from(new Set(values));
+  return Array.from(new Set(genericReportMetricValues(reportData, false)));
 }
 
 function reportOverallKpis(reportData: Record<string, unknown>) {
@@ -722,6 +724,8 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     targetClient: client,
     expectedCurrency: metadata.currency,
   });
+  const nonCurrencyStaleTerms = staleTerms.filter((term) => !term.includes("£"));
+  const currencyStaleTerms = staleTerms.filter((term) => term.includes("£"));
 
   for (const slide of slides) {
     const slideObjectId = asString(slide.slideObjectId);
@@ -730,12 +734,10 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
 
     const textElements = asObjectArray(slide.textElements);
-    for (const term of staleTerms) {
+    for (const term of nonCurrencyStaleTerms) {
       let replacement = targetLabel || market || client;
       const normalizedTerm = term.trim().toLowerCase();
-      if (term.includes("£")) {
-        replacement = currencyPrefix(metadata.currency);
-      } else if (
+      if (
         normalizedTerm === "uk" ||
         normalizedTerm === "wwt uk" ||
         normalizedTerm === "united kingdom" ||
@@ -762,7 +764,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     const metricElements = textElements
       .filter((element) => asString(element.source) !== "table_cell")
       .map((element) => asString(element.text))
-      .filter(isLikelyMetricText);
+      .filter((text) => isLikelyMetricText(text) && !/^(?:[A-Z]{0,3}\$|£|\$|€)$/i.test(text.trim()));
     metricElements.slice(0, values.length).forEach((find, index) => {
       const replace = values[index];
       if (replace) {
@@ -776,6 +778,13 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       .at(-1);
     if (longText && /\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longText)) {
       pushGenericSlideReplacement(requests, seen, slideObjectId, longText, commentary);
+    }
+
+    for (const term of currencyStaleTerms) {
+      const replacement = currencyPrefix(metadata.currency);
+      if (replacement) {
+        pushGenericSlideReplacement(requests, seen, slideObjectId, term, replacement);
+      }
     }
   }
 
@@ -991,6 +1000,69 @@ function deterministicWorkflowCalls(input: {
 }) {
   const calls: PlannedToolCall[] = [];
   const presentationId = copiedPresentationId(input.toolResults);
+  const failedAudit = hasFailedDeckAudit(input.toolResults);
+  const auditCount = successfulToolCount(input.toolResults, "google.slides.auditDeck");
+  const inspectCount = successfulToolCount(input.toolResults, "google.slides.inspectTemplate");
+  const batchUpdateCount = successfulToolCount(input.toolResults, "google.slides.batchUpdate");
+  const latestTool = latestSuccessfulToolName(input.toolResults);
+  const canAttemptAuditRepair = failedAudit && auditCount < 3;
+
+  if (
+    input.requirements.requiresSlidesDeckWrite &&
+    presentationId &&
+    input.availableTools.includes("google.slides.inspectTemplate") &&
+    canAttemptAuditRepair &&
+    latestTool === "google.slides.auditDeck" &&
+    inspectCount <= auditCount
+  ) {
+    calls.push({
+      tool: "google.slides.inspectTemplate",
+      reason:
+        "The deck audit failed. Reinspect the current copied deck so the repair batch targets the latest visible template content.",
+      input: { presentationId },
+    });
+    return calls;
+  }
+
+  if (
+    input.requirements.requiresSlidesDeckWrite &&
+    presentationId &&
+    input.availableTools.includes("google.slides.batchUpdate") &&
+    canAttemptAuditRepair &&
+    latestTool === "google.slides.inspectTemplate" &&
+    batchUpdateCount <= auditCount
+  ) {
+    const requests = genericReportDeckBatchRequests(input.toolResults);
+    if (requests.length > 0) {
+      calls.push({
+        tool: "google.slides.batchUpdate",
+        reason:
+          "Repair the copied deck after a failed audit using the latest deck map and structured report_data.json.",
+        input: { presentationId, requests },
+      });
+      return calls;
+    }
+  }
+
+  if (
+    input.requirements.requiresSlidesDeckWrite &&
+    presentationId &&
+    input.availableTools.includes("google.slides.auditDeck") &&
+    canAttemptAuditRepair &&
+    latestTool === "google.slides.batchUpdate" &&
+    auditCount <= batchUpdateCount
+  ) {
+    const reportData = metricArtifactJson(input.toolResults);
+    calls.push({
+      tool: "google.slides.auditDeck",
+      reason: "Audit the repaired copied deck before allowing publication.",
+      input: {
+        presentationId,
+        reportData,
+      },
+    });
+    return calls;
+  }
 
   if (
     input.requirements.requiresSlidesDeckWrite &&
@@ -2003,6 +2075,8 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
       toolCalls: [] as Prisma.InputJsonValue[],
       artifacts: [] as Prisma.InputJsonValue[],
       protectedActionRequests: [] as string[],
+      unresolvedWorkflowOutcomes: [] as string[],
+      workflowStatus: "complete",
       createdGoogleFiles: [] as RuntimeState["createdGoogleFiles"],
     };
   }
@@ -2173,6 +2247,8 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     toolCalls,
     artifacts,
     protectedActionRequests: state.protectedActionRequests,
+    unresolvedWorkflowOutcomes,
+    workflowStatus: unresolvedWorkflowOutcomes.length > 0 ? "incomplete" : "complete",
     createdGoogleFiles: state.createdGoogleFiles,
     output: {
       text: final.text,

@@ -471,7 +471,11 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       blockers: [
         ...connectorContext.blockers,
         ...toolLoopResult.protectedActionRequests,
+        ...(toolLoopResult.unresolvedWorkflowOutcomes ?? []),
       ],
+      workflowStatus: toolLoopResult.workflowStatus,
+      unresolvedWorkflowOutcomes:
+        (toolLoopResult.unresolvedWorkflowOutcomes ?? []) as unknown as Prisma.InputJsonValue,
       toolResults: toolLoopResult.toolResults as unknown as Prisma.InputJsonValue,
       createdGoogleFiles:
         toolLoopResult.createdGoogleFiles as unknown as Prisma.InputJsonValue,
@@ -483,11 +487,23 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
         : "Read-only connector calls may have been executed. No external writes, sends, budget edits, or campaign changes were made.",
     };
 
+    const unresolvedWorkflowOutcomes = toolLoopResult.unresolvedWorkflowOutcomes ?? [];
+    const status = unresolvedWorkflowOutcomes.length > 0 ? "FAILED" : "SUCCESS";
+    const summary =
+      unresolvedWorkflowOutcomes.length > 0
+        ? "Agent run completed with unresolved workflow blockers."
+        : summarizeOutput(result.text);
+    const error =
+      unresolvedWorkflowOutcomes.length > 0
+        ? unresolvedWorkflowOutcomes.join(" ")
+        : null;
+
     return db.agentRun.update({
       where: { id: run.id },
       data: {
-        status: "SUCCESS",
-        summary: summarizeOutput(result.text),
+        status,
+        summary,
+        error,
         output,
         costEstimate:
           result.estimatedCostUsd !== null && result.estimatedCostUsd !== undefined
