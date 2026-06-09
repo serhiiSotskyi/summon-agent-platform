@@ -575,6 +575,205 @@ function expectedReportValues(reportData: Record<string, unknown>) {
   return Array.from(new Set(values));
 }
 
+function reportOverallKpis(reportData: Record<string, unknown>) {
+  const overallKpis = asRecord(reportData.overall_kpis);
+  return Object.keys(overallKpis).length > 0 ? overallKpis : asRecord(reportData.overall);
+}
+
+function currencyPrefix(currency: string) {
+  const normalized = currency.toLowerCase();
+  if (normalized === "aud") {
+    return "A$";
+  }
+  if (normalized === "usd") {
+    return "$";
+  }
+  if (normalized === "eur") {
+    return "€";
+  }
+  if (normalized === "gbp" || currency === "£") {
+    return "£";
+  }
+  return currency ? `${currency} ` : "";
+}
+
+function formatReportCurrency(value: unknown, currency: string, compact = false) {
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) {
+    return "";
+  }
+
+  const prefix = currencyPrefix(currency);
+  if (compact) {
+    return `${prefix}${Math.round(number / 1000).toLocaleString("en-GB")}K`;
+  }
+
+  return `${prefix}${Math.round(number).toLocaleString("en-GB")}`;
+}
+
+function formatReportDecimalCurrency(value: unknown, currency: string) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? `${currencyPrefix(currency)}${number.toFixed(2)}` : "";
+}
+
+function genericReportMetricValues(reportData: Record<string, unknown>, compactCost = false) {
+  const metadata = reportMetadataFromArtifact(reportData);
+  const currency = metadata.currency || "GBP";
+  const overall = reportOverallKpis(reportData);
+  return [
+    formatIntegerMetric(overall.sales_leads ?? overall.leads),
+    formatReportCurrency(overall.cost ?? overall.spend, currency, compactCost),
+    formatReportDecimalCurrency(overall.cpl, currency),
+    formatPercentMetric(overall.cvr),
+    formatIntegerMetric(overall.clicks),
+    formatPercentMetric(overall.ctr),
+  ].filter(Boolean);
+}
+
+function latestDeckMap(results: unknown[]) {
+  const inspected = latestSuccessfulToolResult(results, "google.slides.inspectTemplate");
+  return asRecord(inspected?.result);
+}
+
+function genericReplaceSlideTextRequest(slideObjectId: string, find: string, replace: string) {
+  return {
+    replaceAllText: {
+      containsText: {
+        text: find,
+        matchCase: true,
+      },
+      replaceText: replace,
+      pageObjectIds: [slideObjectId],
+    },
+  };
+}
+
+function pushGenericSlideReplacement(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  slideObjectId: string,
+  find: string,
+  replace: string,
+) {
+  const trimmedFind = find.trim();
+  const trimmedReplace = replace.trim();
+  if (!trimmedFind || !trimmedReplace || trimmedFind === trimmedReplace) {
+    return;
+  }
+  const key = `${slideObjectId}\u0000${trimmedFind}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  requests.push(genericReplaceSlideTextRequest(slideObjectId, trimmedFind, trimmedReplace));
+}
+
+function isLikelyMetricText(value: string) {
+  return /^(?:[A-Z]{0,3}\$|£|\$|€)?\s?[\d,.]+(?:K|M)?%?$/i.test(value.trim());
+}
+
+function reportDeckCommentary(reportData: Record<string, unknown>) {
+  const metadata = reportMetadataFromArtifact(reportData);
+  const overall = reportOverallKpis(reportData);
+  const currency = metadata.currency || "GBP";
+  const client = metadata.client || "the client";
+  const market = metadata.market ? `${metadata.market} ` : "";
+  const period = metadata.period ? ` for ${metadata.period}` : "";
+  const leads = formatIntegerMetric(overall.sales_leads ?? overall.leads) || "unverified";
+  const spend = formatReportCurrency(overall.cost ?? overall.spend, currency) || "unverified";
+  const cpl = formatReportDecimalCurrency(overall.cpl, currency) || "unverified";
+  const cvr = formatPercentMetric(overall.cvr) || "unverified";
+  const clicks = formatIntegerMetric(overall.clicks) || "unverified";
+  const ctr = formatPercentMetric(overall.ctr) || "unverified";
+
+  return [
+    `${client} ${market}performance${period} was rebuilt from the uploaded report data, not copied from the visual template.`,
+    `The data shows ${leads} leads from ${spend} spend, with ${clicks} clicks, ${ctr} CTR, ${cpl} CPL, and ${cvr} CVR.`,
+    "Slides with missing comparator, planning, auction, or update data should remain as human-editable placeholders until supporting evidence is attached.",
+  ].join("\n");
+}
+
+function genericReportDeckBatchRequests(results: unknown[]) {
+  const reportData = metricArtifactJson(results);
+  const metadata = reportMetadataFromArtifact(reportData);
+  const deckMap = latestDeckMap(results);
+  const slides = asObjectArray(deckMap.slides);
+  if (Object.keys(reportData).length === 0 || slides.length === 0) {
+    return [];
+  }
+
+  const requests: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  const client = metadata.client || "";
+  const market = metadata.market || "";
+  const targetLabel = [client, market].filter(Boolean).join(" ").trim();
+  const values = genericReportMetricValues(reportData, true);
+  const commentary = reportDeckCommentary(reportData);
+  const staleTerms = staleTermsForTarget({
+    targetMarket: market,
+    targetClient: client,
+    expectedCurrency: metadata.currency,
+  });
+
+  for (const slide of slides) {
+    const slideObjectId = asString(slide.slideObjectId);
+    if (!slideObjectId) {
+      continue;
+    }
+
+    const textElements = asObjectArray(slide.textElements);
+    for (const term of staleTerms) {
+      let replacement = targetLabel || market || client;
+      const normalizedTerm = term.trim().toLowerCase();
+      if (term.includes("£")) {
+        replacement = currencyPrefix(metadata.currency);
+      } else if (
+        normalizedTerm === "uk" ||
+        normalizedTerm === "wwt uk" ||
+        normalizedTerm === "united kingdom" ||
+        normalizedTerm === "au"
+      ) {
+        replacement = market || client || targetLabel;
+      }
+      if (replacement) {
+        pushGenericSlideReplacement(requests, seen, slideObjectId, term, replacement);
+      }
+    }
+
+    const slideText = textElements.map((element) => asString(element.text)).join(" ");
+    if (/quarterly|performance report|qbr|report/i.test(slideText) && metadata.period) {
+      pushGenericSlideReplacement(
+        requests,
+        seen,
+        slideObjectId,
+        "Q1 2026",
+        metadata.period,
+      );
+    }
+
+    const metricElements = textElements
+      .filter((element) => asString(element.source) !== "table_cell")
+      .map((element) => asString(element.text))
+      .filter(isLikelyMetricText);
+    metricElements.slice(0, values.length).forEach((find, index) => {
+      const replace = values[index];
+      if (replace) {
+        pushGenericSlideReplacement(requests, seen, slideObjectId, find, replace);
+      }
+    });
+
+    const longText = textElements
+      .map((element) => asString(element.text))
+      .filter((text) => text.length > 140)
+      .at(-1);
+    if (longText && /\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longText)) {
+      pushGenericSlideReplacement(requests, seen, slideObjectId, longText, commentary);
+    }
+  }
+
+  return requests.slice(0, 220);
+}
+
 function staleTermsForTarget(input: {
   targetMarket?: string;
   targetClient?: string;
@@ -813,6 +1012,25 @@ function deterministicWorkflowCalls(input: {
       input: { presentationId },
     });
     return calls;
+  }
+
+  if (
+    input.requirements.requiresSlidesDeckWrite &&
+    presentationId &&
+    input.availableTools.includes("google.slides.batchUpdate") &&
+    hasSuccessfulTool(input.toolResults, "google.slides.inspectTemplate") &&
+    !hasMeaningfulSlidesWrite(input.toolResults)
+  ) {
+    const requests = genericReportDeckBatchRequests(input.toolResults);
+    if (requests.length > 0) {
+      calls.push({
+        tool: "google.slides.batchUpdate",
+        reason:
+          "Apply generic report-data updates from report_data.json to the run-owned copied deck before audit.",
+        input: { presentationId, requests },
+      });
+      return calls;
+    }
   }
 
   if (
