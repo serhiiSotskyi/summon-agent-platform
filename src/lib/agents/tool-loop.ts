@@ -678,6 +678,38 @@ function pushGenericSlideReplacement(
   requests.push(genericReplaceSlideTextRequest(slideObjectId, trimmedFind, trimmedReplace));
 }
 
+function staleTermRegex(term: string) {
+  const normalized = term.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized === "uk") {
+    // Match the UK market label, but do not treat URL/domain fragments like .co.uk as stale copy.
+    return /(?<![.\w-])uk(?![.\w-])/i;
+  }
+
+  if (normalized === "au") {
+    return /(?<![.\w-])au(?![.\w-])/i;
+  }
+
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(escaped, "i");
+}
+
+function staleTermMatch(text: string, term: string) {
+  const regex = staleTermRegex(term);
+  if (!regex) {
+    return null;
+  }
+
+  return regex.exec(text);
+}
+
+function staleTermMatches(text: string, term: string) {
+  return Boolean(staleTermMatch(text, term));
+}
+
 function isLikelyMetricText(value: string) {
   return /^(?:[A-Z]{0,3}\$|£|\$|€)?\s?[\d,.]+(?:K|M)?%?$/i.test(value.trim());
 }
@@ -738,7 +770,18 @@ function shouldPlaceholderReportSlide(reportData: Record<string, unknown>, slide
     },
     {
       missing: ["plans", "next steps", "client updates", "human-provided context"],
-      slide: ["next steps", "other updates", "testing", "ad copy test", "ai max", "ad monitor", "price inclusion"],
+      slide: [
+        "next steps",
+        "other updates",
+        "testing",
+        "ad copy test",
+        "gtm audit",
+        "ai max",
+        "ad monitor",
+        "landing page test",
+        "price inclusion",
+        "live price",
+      ],
     },
   ];
 
@@ -786,7 +829,8 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     return [];
   }
 
-  const requests: Record<string, unknown>[] = [];
+  const placeholderRequests: Record<string, unknown>[] = [];
+  const updateRequests: Record<string, unknown>[] = [];
   const seen = new Set<string>();
   const client = metadata.client || "";
   const market = metadata.market || "";
@@ -810,7 +854,14 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     const textElements = asObjectArray(slide.textElements);
     const slideText = textElements.map((element) => asString(element.text)).join(" ");
     const slideTitle = asString(slide.titleCandidate);
-    if (shouldPlaceholderReportSlide(reportData, slideText)) {
+    const containsStaleTerm = staleTerms.some((term) => staleTermMatches(slideText, term));
+    const containsExpectedValue = expectedReportValues(reportData).some((value) =>
+      slideText.includes(value),
+    );
+    if (
+      shouldPlaceholderReportSlide(reportData, slideText) ||
+      (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
+    ) {
       let wrotePlaceholder = false;
       for (const element of textElements) {
         const text = asString(element.text);
@@ -826,7 +877,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
           replacement = "Source: Not provided in uploaded run data";
         }
 
-        pushGenericSlideReplacement(requests, seen, slideObjectId, text, replacement);
+        pushGenericSlideReplacement(placeholderRequests, seen, slideObjectId, text, replacement);
       }
       continue;
     }
@@ -843,18 +894,12 @@ function genericReportDeckBatchRequests(results: unknown[]) {
         replacement = market || client || targetLabel;
       }
       if (replacement) {
-        pushGenericSlideReplacement(requests, seen, slideObjectId, term, replacement);
+        pushGenericSlideReplacement(updateRequests, seen, slideObjectId, term, replacement);
       }
     }
 
     if (/quarterly|performance report|qbr|report/i.test(slideText) && metadata.period) {
-      pushGenericSlideReplacement(
-        requests,
-        seen,
-        slideObjectId,
-        "Q1 2026",
-        metadata.period,
-      );
+      pushGenericSlideReplacement(updateRequests, seen, slideObjectId, "Q1 2026", metadata.period);
     }
 
     const metricElements = textElements
@@ -864,7 +909,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     metricElements.slice(0, values.length).forEach((find, index) => {
       const replace = values[index];
       if (replace) {
-        pushGenericSlideReplacement(requests, seen, slideObjectId, find, replace);
+        pushGenericSlideReplacement(updateRequests, seen, slideObjectId, find, replace);
       }
     });
 
@@ -873,18 +918,18 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       .filter((text) => text.length > 140)
       .at(-1);
     if (longText && /\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longText)) {
-      pushGenericSlideReplacement(requests, seen, slideObjectId, longText, commentary);
+      pushGenericSlideReplacement(updateRequests, seen, slideObjectId, longText, commentary);
     }
 
     for (const term of currencyStaleTerms) {
       const replacement = currencyPrefix(metadata.currency);
       if (replacement) {
-        pushGenericSlideReplacement(requests, seen, slideObjectId, term, replacement);
+        pushGenericSlideReplacement(updateRequests, seen, slideObjectId, term, replacement);
       }
     }
   }
 
-  return requests.slice(0, 220);
+  return [...placeholderRequests, ...updateRequests].slice(0, 800);
 }
 
 function staleTermsForTarget(input: {
@@ -925,7 +970,6 @@ async function auditGoogleSlidesDeck(input: {
     presentationId: input.presentationId,
   });
   const deckText = normalizedDeckText(deckMap);
-  const lowerDeckText = deckText.toLowerCase();
   const metadata = reportMetadataFromArtifact(input.reportData);
   const targetMarket = input.targetMarket || metadata.market;
   const targetClient = input.targetClient || metadata.client;
@@ -937,11 +981,11 @@ async function auditGoogleSlidesDeck(input: {
   });
   const staleReferences = staleTerms
     .map((term) => {
-      const lowerTerm = term.toLowerCase();
-      const index = lowerDeckText.indexOf(lowerTerm.trim().toLowerCase());
-      if (index < 0) {
+      const match = staleTermMatch(deckText, term);
+      if (!match || typeof match.index !== "number") {
         return null;
       }
+      const index = match.index;
       return {
         term,
         context: deckText.slice(Math.max(0, index - 80), index + term.length + 80),
@@ -958,11 +1002,7 @@ async function auditGoogleSlidesDeck(input: {
       .map((element) => asString(element.text))
       .join("\n");
     const reasons: string[] = [];
-    if (
-      staleTerms.some((term) =>
-        text.toLowerCase().includes(term.trim().toLowerCase()),
-      )
-    ) {
+    if (staleTerms.some((term) => staleTermMatches(text, term))) {
       reasons.push("Contains stale source-market or source-template text.");
     }
     if (/\bplaceholder|to be confirmed|human review|not provided|missing\b/i.test(text)) {
