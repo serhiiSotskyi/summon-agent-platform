@@ -115,6 +115,19 @@ function firstText(record: OutputRecord, keys: string[]) {
   return null;
 }
 
+function publicArtifactUrl(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function readToolCalls(output: Prisma.JsonValue) {
   const entries = readOutputObjectArray(output, [
     "toolCalls",
@@ -220,7 +233,7 @@ function readArtifacts(output: Prisma.JsonValue) {
       type: firstText(entry, ["type", "mimeType", "contentType"]),
       status: firstText(entry, ["status", "state"]) || "ready",
       summary: firstText(entry, ["summary", "description", "notes", "text"]),
-      url:
+      url: publicArtifactUrl(
         firstText(entry, [
           "url",
           "link",
@@ -229,7 +242,8 @@ function readArtifacts(output: Prisma.JsonValue) {
           "downloadUrl",
           "fileUrl",
           "location",
-        ]) || null,
+        ]),
+      ),
       raw: JSON.stringify(entry),
     };
   });
