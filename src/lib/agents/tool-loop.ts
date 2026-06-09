@@ -4,9 +4,12 @@ import {
   copyGoogleDriveFile,
   createGoogleDriveTextFile,
   createNotionPage,
+  inspectGoogleSlidesTemplate,
   readGoogleSlidesText,
   readGoogleSheetRange,
   replaceGoogleSlidesText,
+  updateGoogleSlidesTableCell,
+  updateGoogleSlidesTextElement,
   updateGoogleSheetRange,
 } from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
@@ -231,6 +234,71 @@ function compactToolResultForPrompt(value: unknown) {
     };
   }
 
+  if (toolName === "google.slides.inspectTemplate") {
+    return {
+      ...base,
+      result: {
+        presentationId: result.presentationId,
+        title: result.title,
+        slides: asObjectArray(result.slides)
+          .slice(0, 24)
+          .map((slide) => ({
+            slideIndex: slide.slideIndex,
+            slideObjectId: slide.slideObjectId,
+            classification: slide.classification,
+            titleCandidate: compactText(slide.titleCandidate, 220),
+            textElements: asObjectArray(slide.textElements)
+              .slice(0, 18)
+              .map((element) => ({
+                objectId: element.objectId,
+                source: element.source,
+                rowIndex: element.rowIndex,
+                columnIndex: element.columnIndex,
+                text: compactText(element.text, 260),
+              })),
+            pageElements: asObjectArray(slide.pageElements)
+              .slice(0, 18)
+              .map((element) => ({
+                objectId: element.objectId,
+                type: element.type,
+                shapeType: element.shapeType,
+                text: compactText(element.text, 180),
+                table: element.table
+                  ? {
+                      rowCount: asRecord(element.table).rowCount,
+                      columnCount: asRecord(element.table).columnCount,
+                    }
+                  : null,
+                hasImage: Boolean(element.image),
+                hasChart: Boolean(element.sheetsChart),
+              })),
+          })),
+      },
+    };
+  }
+
+  if (toolName === "google.slides.auditDeck") {
+    return {
+      ...base,
+      result: {
+        presentationId: result.presentationId,
+        passed: result.passed,
+        score: result.score,
+        staleReferences: asObjectArray(result.staleReferences).slice(0, 20),
+        missingExpectedValues: asStringArray(result.missingExpectedValues).slice(0, 20),
+        slideStatuses: asObjectArray(result.slideStatuses)
+          .slice(0, 30)
+          .map((slide) => ({
+            slideIndex: slide.slideIndex,
+            classification: slide.classification,
+            status: slide.status,
+            reasons: slide.reasons,
+          })),
+        recommendations: asStringArray(result.recommendations).slice(0, 10),
+      },
+    };
+  }
+
   if (
     toolName === "google.slides.copyTemplate" ||
     toolName === "google.drive.copyFile" ||
@@ -347,6 +415,15 @@ function hasMeaningfulSlidesWrite(results: unknown[]) {
   });
 }
 
+function hasDeckAudit(results: unknown[]) {
+  return hasSuccessfulTool(results, "google.slides.auditDeck");
+}
+
+function hasPassingDeckAudit(results: unknown[]) {
+  const audit = latestSuccessfulToolResult(results, "google.slides.auditDeck");
+  return asRecord(audit?.result).passed === true;
+}
+
 function missingWorkflowOutcomes(input: {
   requirements: WorkflowRequirementState;
   toolResults: unknown[];
@@ -360,15 +437,30 @@ function missingWorkflowOutcomes(input: {
         "Copy the source/template deck into a run-owned Google Slides deck with google.slides.copyTemplate.",
       );
     } else if (
-      input.availableTools.includes("google.slides.readText") &&
-      !hasSuccessfulTool(input.toolResults, "google.slides.readText")
+      input.availableTools.includes("google.slides.inspectTemplate") &&
+      !hasSuccessfulTool(input.toolResults, "google.slides.inspectTemplate")
     ) {
       missing.push(
-        "Read the copied Google Slides deck with google.slides.readText before targeting replacements.",
+        "Inspect the copied Google Slides deck with google.slides.inspectTemplate before targeting slide/object/table edits.",
       );
     } else if (!hasMeaningfulSlidesWrite(input.toolResults)) {
       missing.push(
-        "Populate the copied Google Slides deck with google.slides.replaceText or google.slides.batchUpdate. Do not stop after copying or reading the deck.",
+        "Populate the copied Google Slides deck with object/table/batch updates. Do not stop after copying or reading the deck.",
+      );
+    } else if (
+      input.availableTools.includes("google.slides.auditDeck") &&
+      !hasDeckAudit(input.toolResults)
+    ) {
+      missing.push(
+        "Audit the generated deck with google.slides.auditDeck and address stale template content before finalizing.",
+      );
+    } else if (
+      input.availableTools.includes("google.slides.auditDeck") &&
+      hasDeckAudit(input.toolResults) &&
+      !hasPassingDeckAudit(input.toolResults)
+    ) {
+      missing.push(
+        "The latest generated deck audit failed. Fix stale template content, missing KPI values, or placeholder decisions and rerun the audit.",
       );
     }
   }
@@ -412,7 +504,10 @@ function metricArtifactJson(results: unknown[]) {
 
     for (const artifact of candidates) {
       const name = asString(artifact.name).toLowerCase();
-      if (!name.includes("metrics") || !name.endsWith(".json")) {
+      if (
+        !name.endsWith(".json") ||
+        (!name.includes("metrics") && !name.includes("report_data"))
+      ) {
         continue;
       }
 
@@ -430,6 +525,182 @@ function metricArtifactJson(results: unknown[]) {
   }
 
   return {};
+}
+
+function normalizedDeckText(deckMap: Record<string, unknown>) {
+  return asObjectArray(deckMap.slides)
+    .flatMap((slide) =>
+      asObjectArray(slide.textElements).map((element) => asString(element.text)),
+    )
+    .join("\n");
+}
+
+function reportMetadataFromArtifact(reportData: Record<string, unknown>) {
+  const metadata = asRecord(reportData.metadata);
+  return {
+    client:
+      asString(metadata.client) ||
+      asString(reportData.client) ||
+      asString(metadata.account) ||
+      asString(reportData.account),
+    market:
+      asString(metadata.market) ||
+      asString(reportData.market) ||
+      asString(metadata.region) ||
+      asString(reportData.region),
+    period:
+      asString(metadata.period) ||
+      asString(reportData.period) ||
+      asString(metadata.reportPeriod),
+    currency:
+      asString(metadata.currency) ||
+      asString(reportData.currency) ||
+      asString(metadata.currencyCode),
+  };
+}
+
+function expectedReportValues(reportData: Record<string, unknown>) {
+  const overallKpis = asRecord(reportData.overall_kpis);
+  const overall =
+    Object.keys(overallKpis).length > 0 ? overallKpis : asRecord(reportData.overall);
+  const values = [
+    formatIntegerMetric(overall.sales_leads ?? overall.leads),
+    formatIntegerMetric(overall.clicks),
+    formatPercentMetric(overall.ctr),
+    formatPercentMetric(overall.cvr),
+    formatDecimalCurrencyMetric(overall.cpl),
+    formatCurrencyMetric(overall.cost ?? overall.spend),
+  ].filter(Boolean);
+
+  return Array.from(new Set(values));
+}
+
+function staleTermsForTarget(input: {
+  targetMarket?: string;
+  targetClient?: string;
+  expectedCurrency?: string;
+}) {
+  const market = input.targetMarket?.toLowerCase() ?? "";
+  const client = input.targetClient?.toLowerCase() ?? "";
+  const terms: string[] = [];
+
+  if (market.includes("australia") || /\bau\b/.test(market)) {
+    terms.push("Wendy Wu Tours UK", "WWT UK", "United Kingdom", " UK ");
+  }
+  if (market.includes("uk") || market.includes("united kingdom")) {
+    terms.push("Australia", " AU ");
+  }
+  if (client.includes("wendy wu") && market.includes("australia")) {
+    terms.push("Wendy Wu Tours UK");
+  }
+  if (input.expectedCurrency && !["gbp", "£"].includes(input.expectedCurrency.toLowerCase())) {
+    terms.push("£");
+  }
+
+  return Array.from(new Set(terms));
+}
+
+async function auditGoogleSlidesDeck(input: {
+  workspaceId: string;
+  presentationId: string;
+  reportData: Record<string, unknown>;
+  targetMarket?: string;
+  targetClient?: string;
+  expectedCurrency?: string;
+}) {
+  const deckMap = await inspectGoogleSlidesTemplate({
+    workspaceId: input.workspaceId,
+    presentationId: input.presentationId,
+  });
+  const deckText = normalizedDeckText(deckMap);
+  const lowerDeckText = deckText.toLowerCase();
+  const metadata = reportMetadataFromArtifact(input.reportData);
+  const targetMarket = input.targetMarket || metadata.market;
+  const targetClient = input.targetClient || metadata.client;
+  const expectedCurrency = input.expectedCurrency || metadata.currency;
+  const staleTerms = staleTermsForTarget({
+    targetMarket,
+    targetClient,
+    expectedCurrency,
+  });
+  const staleReferences = staleTerms
+    .map((term) => {
+      const lowerTerm = term.toLowerCase();
+      const index = lowerDeckText.indexOf(lowerTerm.trim().toLowerCase());
+      if (index < 0) {
+        return null;
+      }
+      return {
+        term,
+        context: deckText.slice(Math.max(0, index - 80), index + term.length + 80),
+      };
+    })
+    .filter(Boolean);
+  const expectedValues = expectedReportValues(input.reportData);
+  const missingExpectedValues = expectedValues.filter(
+    (value) => !deckText.includes(value),
+  );
+  const slides = asObjectArray(deckMap.slides);
+  const slideStatuses = slides.map((slide) => {
+    const text = asObjectArray(slide.textElements)
+      .map((element) => asString(element.text))
+      .join("\n");
+    const reasons: string[] = [];
+    if (
+      staleTerms.some((term) =>
+        text.toLowerCase().includes(term.trim().toLowerCase()),
+      )
+    ) {
+      reasons.push("Contains stale source-market or source-template text.");
+    }
+    if (/\bplaceholder|to be confirmed|human review|not provided|missing\b/i.test(text)) {
+      reasons.push("Marked as placeholder or human-review content.");
+    }
+
+    const status = reasons.some((reason) => reason.includes("stale"))
+      ? "needs-human-review"
+      : reasons.length > 0
+        ? "placeholder"
+        : asString(slide.classification) === "section_divider"
+          ? "unchanged-section-divider"
+          : "updated-or-review";
+
+    return {
+      slideIndex: slide.slideIndex,
+      slideObjectId: slide.slideObjectId,
+      classification: slide.classification,
+      status,
+      reasons,
+    };
+  });
+  const score = Math.max(
+    0,
+    100 - staleReferences.length * 10 - missingExpectedValues.length * 4,
+  );
+  const recommendations = [
+    staleReferences.length > 0
+      ? "Replace stale source-market references or explicitly mark those slides as placeholders."
+      : "",
+    missingExpectedValues.length > 0
+      ? "Add missing calculated KPI values from report_data.json to the deck or explain why they are not applicable."
+      : "",
+    "Use deck-map element IDs for slide-scoped edits instead of broad global text replacement.",
+  ].filter(Boolean);
+
+  return {
+    presentationId: input.presentationId,
+    title: deckMap.title,
+    targetClient,
+    targetMarket,
+    expectedCurrency,
+    passed: staleReferences.length === 0 && missingExpectedValues.length <= 1,
+    score,
+    staleReferences,
+    missingExpectedValues,
+    slideStatuses,
+    recommendations,
+    deckMap,
+  };
 }
 
 function formatIntegerMetric(value: unknown) {
@@ -458,263 +729,6 @@ function formatDecimalCurrencyMetric(value: unknown) {
 function formatPercentMetric(value: unknown) {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : "";
-}
-
-function formatPercentMetricRounded(value: unknown) {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : "";
-}
-
-function latestSlidesReadResult(results: unknown[]) {
-  const readResult = latestSuccessfulToolResult(results, "google.slides.readText");
-  return asRecord(readResult?.result);
-}
-
-function textElementsForSlide(slide: Record<string, unknown>) {
-  return asObjectArray(slide.textElements)
-    .map((element) => ({
-      objectId: asString(element.objectId),
-      text: asString(element.text),
-      source: asString(element.source, "shape"),
-      rowIndex:
-        typeof element.rowIndex === "number" ? element.rowIndex : undefined,
-      columnIndex:
-        typeof element.columnIndex === "number" ? element.columnIndex : undefined,
-    }))
-    .filter((element) => element.objectId && element.text);
-}
-
-function normalizeForMatch(value: string) {
-  return value.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function isStandaloneMetricText(value: string) {
-  return /^£?[\d,]+(?:\.\d+)?%?K?$/i.test(value.trim());
-}
-
-function metricScopeForReportSlide(
-  slide: Record<string, unknown>,
-  metrics: Record<string, unknown>,
-) {
-  const slideText = normalizeForMatch(
-    textElementsForSlide(slide)
-      .map((element) => element.text)
-      .join(" "),
-  );
-  const campaigns = asRecord(metrics.campaigns);
-  const destinations = asRecord(metrics.destinations);
-
-  if (slideText.includes("quarterly ppc performance report")) {
-    return {
-      kind: "title",
-      name: "Overall",
-      metrics: asRecord(metrics.overall),
-    };
-  }
-
-  if (slideText.includes("overall performance trend")) {
-    return {
-      kind: "summary",
-      name: "Overall",
-      metrics: asRecord(metrics.overall),
-    };
-  }
-
-  for (const [name, scope] of Object.entries(campaigns)) {
-    if (slideText.includes(`${normalizeForMatch(name)} summary`)) {
-      return {
-        kind: "summary",
-        name,
-        metrics: asRecord(scope),
-      };
-    }
-  }
-
-  for (const [name, scope] of Object.entries(destinations)) {
-    const normalizedName = normalizeForMatch(name);
-    if (
-      slideText.includes(`${normalizedName} summary`) ||
-      (normalizedName === "other" && slideText.includes("other (destination) summary"))
-    ) {
-      return {
-        kind: "summary",
-        name,
-        metrics: asRecord(scope),
-      };
-    }
-  }
-
-  return null;
-}
-
-function reportMetricValueSequence(scope: Record<string, unknown>, kind: string) {
-  const values = [
-    formatIntegerMetric(scope.sales_leads),
-    kind === "title"
-      ? formatCurrencyMetric(scope.cost, true)
-      : formatCurrencyMetric(scope.cost),
-    formatDecimalCurrencyMetric(scope.cpl),
-    formatPercentMetric(scope.cvr),
-  ];
-
-  if (kind !== "title") {
-    values.push(formatIntegerMetric(scope.clicks));
-    values.push(formatPercentMetric(scope.ctr));
-  }
-
-  return values.filter(Boolean);
-}
-
-function commentaryForReportSlide(
-  scopeName: string,
-  scope: Record<string, unknown>,
-  overall: Record<string, unknown>,
-) {
-  const name = scopeName === "Overall" ? "The full data set" : scopeName;
-  const cpl = formatDecimalCurrencyMetric(scope.cpl);
-  const cvr = formatPercentMetric(scope.cvr);
-  const ctr = formatPercentMetric(scope.ctr);
-  const leads = formatIntegerMetric(scope.sales_leads);
-  const spend = formatCurrencyMetric(scope.cost);
-  const clicks = formatIntegerMetric(scope.clicks);
-  const overallLeads = Number(overall.sales_leads);
-  const scopeLeads = Number(scope.sales_leads);
-  const leadShare =
-    Number.isFinite(scopeLeads) && Number.isFinite(overallLeads) && overallLeads > 0
-      ? formatPercentMetricRounded(scopeLeads / overallLeads)
-      : "";
-
-  if (scopeName === "Overall") {
-    return [
-      `The uploaded CSV shows ${leads} leads from ${spend} of media spend, at a blended CPL of ${cpl}.`,
-      `Traffic volume was substantial at ${clicks} clicks, with CTR of ${ctr} and CVR of ${cvr}.`,
-      "Budget and performance commentary is based on the uploaded CSV plus Summon Notion/Drive memory; live Google Ads API data was not used in this run.",
-      "Human review is needed before this deck is sent externally, especially for YoY statements and visual charts that need live comparator data.",
-    ].join("\n");
-  }
-
-  return [
-    `${name} produced ${leads} leads from ${spend}, at a blended CPL of ${cpl}.`,
-    leadShare ? `${name} accounts for roughly ${leadShare} of total recorded leads in the uploaded data.` : "",
-    `CTR is ${ctr} and CVR is ${cvr}, so the next review should focus on whether traffic quality supports the current budget split.`,
-    "YoY and chart commentary should be reviewed against the live reporting source before client distribution.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function replaceSlideTextRequest(slideObjectId: string, find: string, replace: string) {
-  return {
-    replaceAllText: {
-      containsText: {
-        text: find,
-        matchCase: true,
-      },
-      replaceText: replace,
-      pageObjectIds: [slideObjectId],
-    },
-  };
-}
-
-function pushSlideScopedReplacement(
-  requests: Record<string, unknown>[],
-  seen: Set<string>,
-  slideObjectId: string,
-  find: string,
-  replace: string,
-) {
-  const trimmedFind = find.trim();
-  const trimmedReplace = replace.trim();
-  if (!trimmedFind || !trimmedReplace || trimmedFind === trimmedReplace) {
-    return;
-  }
-
-  const key = `${slideObjectId}\u0000${trimmedFind}`;
-  if (seen.has(key)) {
-    return;
-  }
-
-  seen.add(key);
-  requests.push(replaceSlideTextRequest(slideObjectId, trimmedFind, trimmedReplace));
-}
-
-function metricDeckBatchRequests(results: unknown[]) {
-  const metrics = metricArtifactJson(results);
-  const overall = asRecord(metrics.overall);
-  if (Object.keys(overall).length === 0) {
-    return [];
-  }
-
-  const readResult = latestSlidesReadResult(results);
-  const slides = asObjectArray(readResult.slides);
-  const requests: Record<string, unknown>[] = [];
-  const seen = new Set<string>();
-
-  for (const slide of slides) {
-    const scope = metricScopeForReportSlide(slide, metrics);
-    if (!scope) {
-      continue;
-    }
-    const slideObjectId = asString(slide.slideObjectId);
-    if (!slideObjectId) {
-      continue;
-    }
-
-    const elements = textElementsForSlide(slide);
-    const metricElements = elements.filter(
-      (element) =>
-        element.source !== "table_cell" && isStandaloneMetricText(element.text),
-    );
-    const values = reportMetricValueSequence(scope.metrics, scope.kind);
-    let metricReplacementCount = 0;
-
-    metricElements.slice(0, values.length).forEach((element, index) => {
-      const nextText = values[index];
-      if (nextText && element.text !== nextText) {
-        metricReplacementCount += 1;
-        pushSlideScopedReplacement(
-          requests,
-          seen,
-          slideObjectId,
-          element.text,
-          nextText,
-        );
-      }
-    });
-
-    if (scope.kind === "summary" && metricReplacementCount > 0) {
-      const commentaryElement = elements
-        .filter((element) => element.source !== "table_cell")
-        .filter((element) => element.text.length > 120)
-        .at(-1);
-      const commentary = commentaryForReportSlide(scope.name, scope.metrics, overall);
-      if (commentaryElement && commentary && commentaryElement.text !== commentary) {
-        pushSlideScopedReplacement(
-          requests,
-          seen,
-          slideObjectId,
-          commentaryElement.text,
-          commentary,
-        );
-      }
-    }
-  }
-
-  return requests.slice(0, 180);
-}
-
-function reportMetricReplacements(results: unknown[]) {
-  const metrics = metricArtifactJson(results);
-  const overall = asRecord(metrics.overall);
-  const replacements = [
-    { find: "5,682", replace: formatIntegerMetric(overall.sales_leads) },
-    { find: "£224K", replace: formatCurrencyMetric(overall.cost, true) },
-    { find: "£224,233", replace: formatCurrencyMetric(overall.cost) },
-    { find: "£39.46", replace: formatDecimalCurrencyMetric(overall.cpl) },
-    { find: "3.10%", replace: formatPercentMetric(overall.cvr) },
-  ].filter((replacement) => replacement.find && replacement.replace);
-
-  return replacements;
 }
 
 function deterministicSummaryMarkdown(input: {
@@ -774,12 +788,13 @@ function deterministicWorkflowCalls(input: {
   if (
     input.requirements.requiresSlidesDeckWrite &&
     presentationId &&
-    input.availableTools.includes("google.slides.readText") &&
-    !hasSuccessfulTool(input.toolResults, "google.slides.readText")
+    input.availableTools.includes("google.slides.inspectTemplate") &&
+    !hasSuccessfulTool(input.toolResults, "google.slides.inspectTemplate")
   ) {
     calls.push({
-      tool: "google.slides.readText",
-      reason: "Read the run-owned copied deck before targeted template replacement.",
+      tool: "google.slides.inspectTemplate",
+      reason:
+        "Build a deck map with slide IDs, element IDs, tables, and layout classifications before targeted template editing.",
       input: { presentationId },
     });
     return calls;
@@ -788,44 +803,43 @@ function deterministicWorkflowCalls(input: {
   if (
     input.requirements.requiresSlidesDeckWrite &&
     presentationId &&
-    input.availableTools.includes("google.slides.batchUpdate") &&
-    hasSuccessfulTool(input.toolResults, "google.slides.readText") &&
-    !hasMeaningfulSlidesWrite(input.toolResults)
+    input.availableTools.includes("google.slides.readText") &&
+    hasSuccessfulTool(input.toolResults, "google.slides.inspectTemplate") &&
+    !hasSuccessfulTool(input.toolResults, "google.slides.readText")
   ) {
-    const requests = metricDeckBatchRequests(input.toolResults);
-    if (requests.length > 0) {
-      calls.push({
-        tool: "google.slides.batchUpdate",
-        reason:
-          "Apply object-level metric and commentary updates from sandbox JSON to the run-owned copied deck.",
-        input: { presentationId, requests },
-      });
-      return calls;
-    }
+    calls.push({
+      tool: "google.slides.readText",
+      reason: "Read the copied deck text after inspection for compact planner context.",
+      input: { presentationId },
+    });
+    return calls;
   }
 
   if (
     input.requirements.requiresSlidesDeckWrite &&
     presentationId &&
-    input.availableTools.includes("google.slides.replaceText") &&
-    hasSuccessfulTool(input.toolResults, "google.slides.readText") &&
-    !hasMeaningfulSlidesWrite(input.toolResults)
+    input.availableTools.includes("google.slides.auditDeck") &&
+    hasMeaningfulSlidesWrite(input.toolResults) &&
+    !hasDeckAudit(input.toolResults)
   ) {
-    const replacements = reportMetricReplacements(input.toolResults);
-    if (replacements.length > 0) {
-      calls.push({
-        tool: "google.slides.replaceText",
-        reason:
-          "Apply deterministic metric replacements from sandbox JSON to the run-owned copied deck.",
-        input: { presentationId, replacements },
-      });
-      return calls;
-    }
+    const reportData = metricArtifactJson(input.toolResults);
+    calls.push({
+      tool: "google.slides.auditDeck",
+      reason:
+        "Audit the generated deck against calculated report data and target-market requirements before publishing.",
+      input: {
+        presentationId,
+        reportData,
+      },
+    });
+    return calls;
   }
 
   if (
     input.availableTools.includes("google.drive.createTextFile") &&
     hasMeaningfulSlidesWrite(input.toolResults) &&
+    (!input.availableTools.includes("google.slides.auditDeck") ||
+      hasPassingDeckAudit(input.toolResults)) &&
     !hasSuccessfulTool(input.toolResults, "google.drive.createTextFile")
   ) {
     calls.push({
@@ -846,6 +860,8 @@ function deterministicWorkflowCalls(input: {
   if (
     input.requirements.requiresNotionPublish &&
     hasMeaningfulSlidesWrite(input.toolResults) &&
+    (!input.availableTools.includes("google.slides.auditDeck") ||
+      hasPassingDeckAudit(input.toolResults)) &&
     !hasSuccessfulTool(input.toolResults, "notion.createPage")
   ) {
     const links = [
@@ -1053,6 +1069,25 @@ function schemaForTool(tool: GenericAgentToolKey) {
         presentationUrl: "Google Slides URL, optional alternative to presentationId",
         presentationId: "Google Slides presentation id",
       };
+    case "google.slides.inspectTemplate":
+      return {
+        presentationUrl: "Google Slides URL, optional alternative to presentationId",
+        presentationId: "Google Slides presentation id",
+      };
+    case "google.slides.updateText":
+      return {
+        presentationId: "deck id created/copied earlier in this run",
+        objectId: "shape/text element object id from inspectTemplate",
+        text: "full replacement text for this text element",
+      };
+    case "google.slides.updateTableCell":
+      return {
+        presentationId: "deck id created/copied earlier in this run",
+        tableObjectId: "table element object id from inspectTemplate",
+        rowIndex: "zero-based table row index",
+        columnIndex: "zero-based table column index",
+        text: "full replacement text for this table cell",
+      };
     case "google.slides.replaceText":
       return {
         presentationId: "deck id created/copied earlier in this run",
@@ -1062,6 +1097,15 @@ function schemaForTool(tool: GenericAgentToolKey) {
       return {
         presentationId: "deck id created/copied earlier in this run",
         requests: "Google Slides API batchUpdate requests",
+      };
+    case "google.slides.auditDeck":
+      return {
+        presentationId: "deck id created/copied earlier in this run",
+        reportData:
+          "optional structured report_data JSON from Python output; omit only if no report data exists",
+        targetClient: "optional client name",
+        targetMarket: "optional target market/region",
+        expectedCurrency: "optional currency code or symbol",
       };
     case "notion.createPage":
       return {
@@ -1101,7 +1145,11 @@ function buildPlannerPrompt(input: {
     "Allowed without approval: reading data, running helper code in the sandbox, creating new files, copying templates, editing files created/copied in this same run, and creating Notion memory pages.",
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
-    "For Google Slides template work, use google.slides.readText on the copied deck before broad replacements when the exact text structure matters.",
+    "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
+    "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
+    "Do not treat a visual template as trusted content. Replace stale source-market labels, copied commentary, and old KPI claims, or explicitly mark the slide as a human-editable placeholder.",
+    "Python/report agents should produce a structured report_data.json artifact where possible: metadata, overall_kpis, trends, segment breakdowns, missing sections, and placeholder recommendations.",
+    "For report decks, run google.slides.auditDeck after writing the copied deck. If it flags stale source-market text or missing KPI values, fix the deck and audit again.",
     "For google.slides.replaceText, match exact visible text inside a single text run. If a KPI value and label are separate, replace the standalone value, for example \"5,682\" instead of \"5,682 Total Leads\".",
     "After google.slides.replaceText, inspect replacementResults. If a required replacement has occurrencesChanged: 0, issue another replaceText with a narrower exact text or use batchUpdate against the copied deck.",
     "If the run prompt requires a generated deck, report, file, or memory page, keep calling tools until those artifacts are actually created or updated. Do not finalize from a copied/read-only artifact.",
@@ -1517,6 +1565,70 @@ async function executeOneTool(input: {
       });
     }
 
+    if (toolName === "google.slides.inspectTemplate") {
+      const attached = firstAttachedGoogleFile(input.agent, {
+        role: "template",
+        urlPattern: /docs\.google\.com\/presentation/,
+      });
+      const presentationId = parseGoogleFileId(
+        asString(request.presentationId) ||
+          asString(request.presentationUrl) ||
+          attached?.url ||
+          "",
+      );
+      if (!presentationId) {
+        throw new Error("google.slides.inspectTemplate requires presentationId, presentationUrl, or an attached Slides template.");
+      }
+      result = await inspectGoogleSlidesTemplate({
+        workspaceId: input.workspaceId,
+        presentationId,
+      });
+      const artifact = artifactOutput(
+        await createArtifact({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          artifactType: "deck_map",
+          name: "deck_map.json",
+          location: null,
+          mimeType: "application/json",
+          payload: asRecord(result),
+        }),
+      );
+      artifacts.push(artifact);
+    }
+
+    if (toolName === "google.slides.updateText") {
+      const presentationId = parseGoogleFileId(asString(request.presentationId));
+      requireCreatedGoogleFile(input.state, presentationId, toolName);
+      const objectId = asString(request.objectId);
+      if (!objectId) {
+        throw new Error("google.slides.updateText requires objectId from google.slides.inspectTemplate.");
+      }
+      result = await updateGoogleSlidesTextElement({
+        workspaceId: input.workspaceId,
+        presentationId,
+        objectId,
+        text: asString(request.text),
+      });
+    }
+
+    if (toolName === "google.slides.updateTableCell") {
+      const presentationId = parseGoogleFileId(asString(request.presentationId));
+      requireCreatedGoogleFile(input.state, presentationId, toolName);
+      const tableObjectId = asString(request.tableObjectId);
+      if (!tableObjectId) {
+        throw new Error("google.slides.updateTableCell requires tableObjectId from google.slides.inspectTemplate.");
+      }
+      result = await updateGoogleSlidesTableCell({
+        workspaceId: input.workspaceId,
+        presentationId,
+        tableObjectId,
+        rowIndex: Number(request.rowIndex),
+        columnIndex: Number(request.columnIndex),
+        text: asString(request.text),
+      });
+    }
+
     if (toolName === "google.slides.replaceText") {
       const presentationId = parseGoogleFileId(asString(request.presentationId));
       requireCreatedGoogleFile(input.state, presentationId, toolName);
@@ -1556,6 +1668,35 @@ async function executeOneTool(input: {
         presentationId,
         requests: asObjectArray(request.requests),
       });
+    }
+
+    if (toolName === "google.slides.auditDeck") {
+      const presentationId = parseGoogleFileId(asString(request.presentationId));
+      requireCreatedGoogleFile(input.state, presentationId, toolName);
+      const reportData =
+        Object.keys(asRecord(request.reportData)).length > 0
+          ? asRecord(request.reportData)
+          : metricArtifactJson([]);
+      result = await auditGoogleSlidesDeck({
+        workspaceId: input.workspaceId,
+        presentationId,
+        reportData,
+        targetClient: asString(request.targetClient),
+        targetMarket: asString(request.targetMarket),
+        expectedCurrency: asString(request.expectedCurrency),
+      });
+      const artifact = artifactOutput(
+        await createArtifact({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          artifactType: "deck_audit",
+          name: "deck_audit.json",
+          location: null,
+          mimeType: "application/json",
+          payload: asRecord(result),
+        }),
+      );
+      artifacts.push(artifact);
     }
 
     if (toolName === "notion.createPage") {

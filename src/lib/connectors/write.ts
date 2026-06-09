@@ -93,6 +93,14 @@ type GoogleDriveFileResult = {
   webViewLink: string | null;
 };
 
+type GoogleSlidesTextElement = {
+  objectId: string | null;
+  text: string;
+  source: "shape" | "table_cell";
+  rowIndex?: number;
+  columnIndex?: number;
+};
+
 const GOOGLE_SLIDES_MIME = "application/vnd.google-apps.presentation";
 const GOOGLE_PPTX_MIME =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -638,6 +646,64 @@ export async function readGoogleSlidesText(input: {
   workspaceId: string;
   presentationId: string;
 }) {
+  const inspected = await inspectGoogleSlidesTemplate(input);
+  return {
+    presentationId: inspected.presentationId,
+    title: inspected.title,
+    slides: inspected.slides.map((slide) => ({
+      slideIndex: slide.slideIndex,
+      slideObjectId: slide.slideObjectId,
+      textElements: slide.textElements,
+    })),
+  };
+}
+
+function readSlidesTextRuns(
+  text:
+    | {
+        textElements?: Array<{
+          textRun?: {
+            content?: string;
+          };
+        }>;
+      }
+    | undefined,
+) {
+  return (text?.textElements ?? [])
+    .map((textElement) => textElement.textRun?.content ?? "")
+    .join("")
+    .trim();
+}
+
+function classifySlide(input: {
+  text: string;
+  hasTable: boolean;
+  hasImage: boolean;
+  hasChart: boolean;
+}) {
+  const text = input.text.toLowerCase();
+  if (text.length < 90 && !input.hasTable && !input.hasImage && !input.hasChart) {
+    return "section_divider";
+  }
+  if (input.hasTable) {
+    return "table_slide";
+  }
+  if (input.hasChart || input.hasImage || /\b(chart|trend|performance)\b/.test(text)) {
+    return "chart_slide";
+  }
+  if (/\b(summary|overview|recommendation|commentary|insight)\b/.test(text)) {
+    return "commentary_slide";
+  }
+  if (/\b(leads|spend|cpl|ctr|cvr|clicks|revenue|cost)\b/.test(text)) {
+    return "kpi_summary";
+  }
+  return "placeholder_candidate";
+}
+
+export async function inspectGoogleSlidesTemplate(input: {
+  workspaceId: string;
+  presentationId: string;
+}) {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
   const response = await fetch(
     `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(
@@ -662,7 +728,10 @@ export async function readGoogleSlidesText(input: {
       objectId?: string;
       pageElements?: Array<{
         objectId?: string;
+        size?: unknown;
+        transform?: unknown;
         shape?: {
+          shapeType?: string;
           text?: {
             textElements?: Array<{
               textRun?: {
@@ -670,6 +739,13 @@ export async function readGoogleSlidesText(input: {
               };
             }>;
           };
+        };
+        image?: {
+          contentUrl?: string;
+        };
+        sheetsChart?: {
+          spreadsheetId?: string;
+          chartId?: number;
         };
         table?: {
           tableRows?: Array<{
@@ -691,17 +767,13 @@ export async function readGoogleSlidesText(input: {
   return {
     presentationId: presentation.presentationId ?? input.presentationId,
     title: presentation.title ?? null,
-    slides: (presentation.slides ?? []).map((slide, slideIndex) => ({
-      slideIndex: slideIndex + 1,
-      slideObjectId: slide.objectId ?? null,
-      textElements: (slide.pageElements ?? [])
-        .flatMap((element) => {
-          const shapeText = (element.shape?.text?.textElements ?? [])
-            .map((textElement) => textElement.textRun?.content ?? "")
-            .join("")
-            .trim();
+    slides: (presentation.slides ?? []).map((slide, slideIndex) => {
+      const pageElements = slide.pageElements ?? [];
+      const textElements = pageElements
+        .flatMap((element): GoogleSlidesTextElement[] => {
+          const shapeText = readSlidesTextRuns(element.shape?.text);
 
-          const shapeElements = shapeText
+          const shapeElements: GoogleSlidesTextElement[] = shapeText
             ? [
                 {
                   objectId: element.objectId ?? null,
@@ -713,26 +785,73 @@ export async function readGoogleSlidesText(input: {
 
           const tableElements = (element.table?.tableRows ?? []).flatMap(
             (row, rowIndex) =>
-              (row.tableCells ?? []).map((cell, columnIndex) => {
-                const text = (cell.text?.textElements ?? [])
-                  .map((textElement) => textElement.textRun?.content ?? "")
-                  .join("")
-                  .trim();
-
-                return {
-                  objectId: element.objectId ?? null,
-                  text,
-                  source: "table_cell",
-                  rowIndex,
-                  columnIndex,
-                };
-              }),
+              (row.tableCells ?? []).map((cell, columnIndex) => ({
+                objectId: element.objectId ?? null,
+                text: readSlidesTextRuns(cell.text),
+                source: "table_cell" as const,
+                rowIndex,
+                columnIndex,
+              })),
           );
 
           return [...shapeElements, ...tableElements];
         })
-        .filter((element) => element.text),
-    })),
+        .filter((element) => element.text);
+
+      const combinedText = textElements.map((element) => element.text).join("\n");
+      const hasTable = pageElements.some((element) => Boolean(element.table));
+      const hasImage = pageElements.some((element) => Boolean(element.image));
+      const hasChart = pageElements.some((element) => Boolean(element.sheetsChart));
+
+      return {
+        slideIndex: slideIndex + 1,
+        slideObjectId: slide.objectId ?? null,
+        classification: classifySlide({
+          text: combinedText,
+          hasTable,
+          hasImage,
+          hasChart,
+        }),
+        titleCandidate: textElements.find((element) => element.source === "shape")?.text ?? null,
+        textElements,
+        pageElements: pageElements.map((element) => ({
+          objectId: element.objectId ?? null,
+          type: element.table
+            ? "table"
+            : element.sheetsChart
+              ? "sheets_chart"
+              : element.image
+                ? "image"
+                : element.shape
+                  ? "shape"
+                  : "unknown",
+          size: element.size ?? null,
+          transform: element.transform ?? null,
+          shapeType: element.shape?.shapeType ?? null,
+          text: readSlidesTextRuns(element.shape?.text) || null,
+          table: element.table
+            ? {
+                rowCount: element.table.tableRows?.length ?? 0,
+                columnCount:
+                  element.table.tableRows?.[0]?.tableCells?.length ?? 0,
+                cells: (element.table.tableRows ?? []).flatMap((row, rowIndex) =>
+                  (row.tableCells ?? []).map((cell, columnIndex) => ({
+                    rowIndex,
+                    columnIndex,
+                    text: readSlidesTextRuns(cell.text),
+                  })),
+                ),
+              }
+            : null,
+          image: element.image
+            ? {
+                hasContentUrl: Boolean(element.image.contentUrl),
+              }
+            : null,
+          sheetsChart: element.sheetsChart ?? null,
+        })),
+      };
+    }),
   };
 }
 
@@ -876,6 +995,68 @@ export async function batchUpdateGoogleSlides(input: {
   }
 
   return payload;
+}
+
+export async function updateGoogleSlidesTextElement(input: {
+  workspaceId: string;
+  presentationId: string;
+  objectId: string;
+  text: string;
+}) {
+  return batchUpdateGoogleSlides({
+    workspaceId: input.workspaceId,
+    presentationId: input.presentationId,
+    requests: [
+      {
+        deleteText: {
+          objectId: input.objectId,
+          textRange: { type: "ALL" },
+        },
+      },
+      {
+        insertText: {
+          objectId: input.objectId,
+          insertionIndex: 0,
+          text: input.text,
+        },
+      },
+    ],
+  });
+}
+
+export async function updateGoogleSlidesTableCell(input: {
+  workspaceId: string;
+  presentationId: string;
+  tableObjectId: string;
+  rowIndex: number;
+  columnIndex: number;
+  text: string;
+}) {
+  const cellLocation = {
+    rowIndex: input.rowIndex,
+    columnIndex: input.columnIndex,
+  };
+  return batchUpdateGoogleSlides({
+    workspaceId: input.workspaceId,
+    presentationId: input.presentationId,
+    requests: [
+      {
+        deleteText: {
+          objectId: input.tableObjectId,
+          cellLocation,
+          textRange: { type: "ALL" },
+        },
+      },
+      {
+        insertText: {
+          objectId: input.tableObjectId,
+          cellLocation,
+          insertionIndex: 0,
+          text: input.text,
+        },
+      },
+    ],
+  });
 }
 
 export async function replaceGoogleSlidesText(input: {

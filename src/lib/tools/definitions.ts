@@ -48,6 +48,27 @@ export const GENERIC_AGENT_TOOLS = [
     category: "Google Slides",
   },
   {
+    key: "google.slides.inspectTemplate",
+    name: "Inspect Slides template",
+    summary:
+      "Inspect a Google Slides deck map with slide IDs, element IDs, text boxes, tables, images/charts, layout hints, and slide classifications.",
+    category: "Google Slides",
+  },
+  {
+    key: "google.slides.updateText",
+    name: "Update slide text element",
+    summary:
+      "Replace the full text in one text box or shape in a run-owned Google Slides deck using its element ID.",
+    category: "Google Slides",
+  },
+  {
+    key: "google.slides.updateTableCell",
+    name: "Update slide table cell",
+    summary:
+      "Replace the full text in one table cell in a run-owned Google Slides deck using table element ID, row, and column.",
+    category: "Google Slides",
+  },
+  {
     key: "google.slides.replaceText",
     name: "Replace text in generated Slides",
     summary:
@@ -59,6 +80,13 @@ export const GENERIC_AGENT_TOOLS = [
     name: "Slides batch update",
     summary:
       "Run raw Google Slides batchUpdate requests against a deck created or copied by the current run.",
+    category: "Google Slides",
+  },
+  {
+    key: "google.slides.auditDeck",
+    name: "Audit generated Slides deck",
+    summary:
+      "Audit a generated deck against report data and target market/client to flag stale template content, missing KPI values, and slides needing review.",
     category: "Google Slides",
   },
   {
