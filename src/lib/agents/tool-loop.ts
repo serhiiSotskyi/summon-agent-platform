@@ -862,20 +862,21 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       shouldPlaceholderReportSlide(reportData, slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
-      const placeholderElement = textElements
+      const placeholderElements = textElements
         .map((element) => asString(element.text))
         .filter((text) => !shouldPreservePlaceholderElement(text, slideTitle))
-        .sort((a, b) => b.length - a.length)
-        .at(0);
-      if (placeholderElement) {
+        .filter((text) => text.trim().length > 2)
+        .sort((a, b) => b.length - a.length);
+
+      placeholderElements.slice(0, 10).forEach((text, index) => {
         pushGenericSlideReplacement(
           placeholderRequests,
           seen,
           slideObjectId,
-          placeholderElement,
-          placeholderTextForSlide(reportData, slideText),
+          text,
+          index === 0 ? placeholderTextForSlide(reportData, slideText) : "—",
         );
-      }
+      });
 
       for (const term of staleTerms) {
         if (!staleTermMatches(slideText, term)) {
@@ -1072,24 +1073,6 @@ function formatIntegerMetric(value: unknown) {
   return Number.isFinite(number) ? Math.round(number).toLocaleString("en-GB") : "";
 }
 
-function formatCurrencyMetric(value: unknown, compact = false) {
-  const number = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(number)) {
-    return "";
-  }
-
-  if (compact) {
-    return `£${Math.round(number / 1000).toLocaleString("en-GB")}K`;
-  }
-
-  return `£${Math.round(number).toLocaleString("en-GB")}`;
-}
-
-function formatDecimalCurrencyMetric(value: unknown) {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? `£${number.toFixed(2)}` : "";
-}
-
 function formatPercentMetric(value: unknown) {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? `${(number * 100).toFixed(2)}%` : "";
@@ -1100,7 +1083,8 @@ function deterministicSummaryMarkdown(input: {
   results: unknown[];
 }) {
   const metrics = metricArtifactJson(input.results);
-  const overall = asRecord(metrics.overall);
+  const metadata = reportMetadataFromArtifact(metrics);
+  const overall = reportOverallKpis(metrics);
   const deckLink = copiedPresentationLink(input.results);
   const lines = [
     `# ${input.agentName} output`,
@@ -1112,8 +1096,8 @@ function deterministicSummaryMarkdown(input: {
     "",
     "## Metrics calculated from sandbox output",
     `- Leads: ${formatIntegerMetric(overall.sales_leads) || "not found"}`,
-    `- Spend: ${formatCurrencyMetric(overall.cost) || "not found"}`,
-    `- CPL: ${formatDecimalCurrencyMetric(overall.cpl) || "not found"}`,
+    `- Spend: ${formatReportCurrency(overall.cost, metadata.currency || "GBP") || "not found"}`,
+    `- CPL: ${formatReportDecimalCurrency(overall.cpl, metadata.currency || "GBP") || "not found"}`,
     `- CVR: ${formatPercentMetric(overall.cvr) || "not found"}`,
     `- CTR: ${formatPercentMetric(overall.ctr) || "not found"}`,
     "",
