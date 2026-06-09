@@ -862,22 +862,34 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       shouldPlaceholderReportSlide(reportData, slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
-      let wrotePlaceholder = false;
-      for (const element of textElements) {
-        const text = asString(element.text);
-        if (shouldPreservePlaceholderElement(text, slideTitle)) {
+      const placeholderElement = textElements
+        .map((element) => asString(element.text))
+        .filter((text) => !shouldPreservePlaceholderElement(text, slideTitle))
+        .sort((a, b) => b.length - a.length)
+        .at(0);
+      if (placeholderElement) {
+        pushGenericSlideReplacement(
+          placeholderRequests,
+          seen,
+          slideObjectId,
+          placeholderElement,
+          placeholderTextForSlide(reportData, slideText),
+        );
+      }
+
+      for (const term of staleTerms) {
+        if (!staleTermMatches(slideText, term)) {
           continue;
         }
-
-        let replacement = "—";
-        if (!wrotePlaceholder && text.length > 18) {
-          replacement = placeholderTextForSlide(reportData, slideText);
-          wrotePlaceholder = true;
-        } else if (/^source:/i.test(text)) {
-          replacement = "Source: Not provided in uploaded run data";
-        }
-
-        pushGenericSlideReplacement(placeholderRequests, seen, slideObjectId, text, replacement);
+        const normalizedTerm = term.trim().toLowerCase();
+        const replacement = normalizedTerm === "£" ? currencyPrefix(metadata.currency) : "—";
+        pushGenericSlideReplacement(
+          placeholderRequests,
+          seen,
+          slideObjectId,
+          term,
+          replacement,
+        );
       }
       continue;
     }
@@ -929,7 +941,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
   }
 
-  return [...placeholderRequests, ...updateRequests].slice(0, 800);
+  return [...placeholderRequests, ...updateRequests].slice(0, 260);
 }
 
 function staleTermsForTarget(input: {

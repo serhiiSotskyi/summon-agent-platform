@@ -86,6 +86,15 @@ type GoogleSlidesImportResult = {
   mimeType: string;
 };
 
+function asObjectArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+}
+
 type GoogleDriveFileResult = {
   fileId: string;
   fileName: string;
@@ -975,26 +984,51 @@ export async function batchUpdateGoogleSlides(input: {
   requests: Record<string, unknown>[];
 }) {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
-  const response = await fetch(
-    `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(
-      input.presentationId,
-    )}:batchUpdate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ requests: input.requests }),
-    },
-  );
-  const payload = await readJson(response);
-  if (!response.ok) {
-    const message = await apiErrorMessage("Google Slides batchUpdate", response, payload);
-    throw new Error(message);
+  const endpoint = `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(
+    input.presentationId,
+  )}:batchUpdate`;
+  const chunks: Record<string, unknown>[][] = [];
+  for (let index = 0; index < input.requests.length; index += 80) {
+    chunks.push(input.requests.slice(index, index + 80));
   }
 
-  return payload;
+  const replies: unknown[] = [];
+  for (const [index, requests] of chunks.entries()) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45_000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ requests }),
+        signal: controller.signal,
+      });
+      const payload = await readJson(response);
+      if (!response.ok) {
+        const message = await apiErrorMessage("Google Slides batchUpdate", response, payload);
+        throw new Error(message);
+      }
+
+      replies.push(...asObjectArray((payload as Record<string, unknown> | null)?.replies));
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`Google Slides batchUpdate timed out on chunk ${index + 1}.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return {
+    presentationId: input.presentationId,
+    replies,
+    chunks: chunks.length,
+    requestCount: input.requests.length,
+  };
 }
 
 export async function updateGoogleSlidesTextElement(input: {
