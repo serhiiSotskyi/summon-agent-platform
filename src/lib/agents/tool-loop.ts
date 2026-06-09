@@ -24,7 +24,7 @@ import {
 } from "@/lib/tools/definitions";
 import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
 
-const MAX_TOOL_ITERATIONS = 8;
+const MAX_TOOL_ITERATIONS = 12;
 const MAX_TOOL_CALLS_PER_ITERATION = 5;
 const TOOL_LLM_TIMEOUT_MS = 45_000;
 const FINAL_LLM_TIMEOUT_MS = 45_000;
@@ -165,9 +165,73 @@ function compactGeneratedFileForPrompt(value: unknown) {
     status: file.status,
     payload: {
       ...payload,
-      contentPreview: shouldKeepPreview && preview ? compactText(preview, 8000) : undefined,
+      contentPreview: shouldKeepPreview && preview ? compactText(preview, 3000) : undefined,
     },
   };
+}
+
+function generatedArtifactJson(artifact: Record<string, unknown>) {
+  const payload = asRecord(artifact.payload);
+  const parsed = asRecord(payload.parsedJson);
+  if (Object.keys(parsed).length > 0) {
+    return parsed;
+  }
+
+  const preview = asString(payload.contentPreview);
+  if (!preview) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(preview) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function compactToolInputForPrompt(toolName: string, value: unknown) {
+  const input = asRecord(value);
+
+  if (toolName === "python.run") {
+    return {
+      entryFile: input.entryFile,
+      args: input.args,
+      code: asString(input.code) ? compactText(input.code, 1200) : undefined,
+    };
+  }
+
+  if (toolName === "google.slides.batchUpdate") {
+    return {
+      presentationId: input.presentationId,
+      requestCount: asObjectArray(input.requests).length,
+    };
+  }
+
+  if (toolName === "google.slides.auditDeck") {
+    return {
+      presentationId: input.presentationId,
+      targetClient: input.targetClient,
+      targetMarket: input.targetMarket,
+      expectedCurrency: input.expectedCurrency,
+      hasReportData: Object.keys(asRecord(input.reportData)).length > 0,
+    };
+  }
+
+  if (toolName === "google.slides.inspectTemplate" || toolName === "google.slides.readText") {
+    return { presentationId: input.presentationId };
+  }
+
+  if (toolName === "notion.createPage" || toolName === "google.drive.createTextFile") {
+    return {
+      title: input.title,
+      name: input.name,
+      mimeType: input.mimeType,
+      content: compactText(input.content, 1600),
+      links: input.links,
+    };
+  }
+
+  return input;
 }
 
 function compactToolResultForPrompt(value: unknown) {
@@ -182,7 +246,7 @@ function compactToolResultForPrompt(value: unknown) {
     id: record.id,
     toolName,
     status: record.status,
-    input: record.input,
+    input: compactToolInputForPrompt(toolName, record.input),
     error: record.error,
     artifacts: asObjectArray(record.artifacts).map(compactGeneratedFileForPrompt),
   };
@@ -526,19 +590,11 @@ function metricArtifactJson(results: unknown[]) {
         continue;
       }
 
-      const preview = asString(asRecord(artifact.payload).contentPreview);
-      if (!preview) {
+      const data = generatedArtifactJson(artifact);
+      if (Object.keys(data).length === 0) {
         continue;
       }
-
-      try {
-        parsedCandidates.push({
-          name,
-          data: JSON.parse(preview) as Record<string, unknown>,
-        });
-      } catch {
-        continue;
-      }
+      parsedCandidates.push({ name, data });
     }
   }
 
@@ -862,19 +918,20 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       shouldPlaceholderReportSlide(reportData, slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
+      const placeholderText = placeholderTextForSlide(reportData, slideText);
       const placeholderElements = textElements
         .map((element) => asString(element.text))
         .filter((text) => !shouldPreservePlaceholderElement(text, slideTitle))
-        .filter((text) => text.trim().length > 2)
+        .filter((text) => text.trim().length > 0 && text.trim() !== "—")
         .sort((a, b) => b.length - a.length);
 
-      placeholderElements.slice(0, 10).forEach((text, index) => {
+      placeholderElements.slice(0, 80).forEach((text, index) => {
         pushGenericSlideReplacement(
           placeholderRequests,
           seen,
           slideObjectId,
           text,
-          index === 0 ? placeholderTextForSlide(reportData, slideText) : "—",
+          index === 0 ? placeholderText : "—",
         );
       });
 
@@ -942,7 +999,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
   }
 
-  return [...placeholderRequests, ...updateRequests].slice(0, 260);
+  return [...placeholderRequests, ...updateRequests].slice(0, 360);
 }
 
 function staleTermsForTarget(input: {
@@ -1413,6 +1470,73 @@ function buildFallbackFinalResult(input: {
   };
 }
 
+function buildDeterministicFinalResult(input: {
+  provider: LlmProvider;
+  model: string;
+  agentName: string;
+  toolResults: unknown[];
+  protectedActionRequests: string[];
+  llmResults: GenerateTextResult[];
+}): GenerateTextResult {
+  const compactResults = compactToolResultsForPrompt(input.toolResults);
+  const toolRecords = compactResults.filter(isToolCallOutputRecord);
+  const links = successfulToolResults(input.toolResults)
+    .flatMap((result) => {
+      const output = asRecord(result.result);
+      return [
+        {
+          label:
+            result.toolName === "google.slides.copyTemplate"
+              ? "Generated Google Slides deck"
+              : result.toolName === "google.drive.createTextFile"
+                ? "Generated Drive summary"
+                : result.toolName === "notion.createPage"
+                  ? "Generated Notion memory page"
+                  : "",
+          url:
+            asString(output.webViewLink) ||
+            asString(output.pageUrl) ||
+            asString(output.webContentLink),
+        },
+      ];
+    })
+    .filter((link) => link.label && link.url);
+
+  const text = [
+    deterministicSummaryMarkdown({
+      agentName: input.agentName,
+      results: input.toolResults,
+    }),
+    "",
+    "## Published links",
+    links.length > 0
+      ? links.map((link) => `- ${link.label}: ${link.url}`).join("\n")
+      : "- No published links were recorded.",
+    "",
+    "## Tool call summary",
+    toolRecords
+      .map((result) => {
+        const record = asRecord(result);
+        return `- ${asString(record.toolName, "tool")}: ${asString(record.status, "unknown")}${
+          record.error ? ` (${record.error})` : ""
+        }`;
+      })
+      .join("\n"),
+    "",
+    input.protectedActionRequests.length > 0
+      ? `Blocked protected actions: ${input.protectedActionRequests.join("; ")}`
+      : "No protected actions were executed.",
+  ].join("\n");
+
+  return {
+    provider: input.provider,
+    model: input.model,
+    text,
+    usage: aggregateUsage(input.llmResults),
+    estimatedCostUsd: aggregateEstimatedCost(input.llmResults),
+  };
+}
+
 function extractJsonObject(text: string) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced?.[1] ?? text;
@@ -1818,6 +1942,14 @@ async function executeOneTool(input: {
       );
       const generatedArtifacts = [];
       for (const file of sandbox.generatedFiles) {
+        let parsedJson: Record<string, unknown> | undefined;
+        if (file.relativePath.toLowerCase().endsWith(".json") && file.contentPreview) {
+          try {
+            parsedJson = JSON.parse(file.contentPreview) as Record<string, unknown>;
+          } catch {
+            parsedJson = undefined;
+          }
+        }
         generatedArtifacts.push(
           artifactOutput(
             await createArtifact({
@@ -1830,6 +1962,7 @@ async function executeOneTool(input: {
               payload: {
                 sizeBytes: file.sizeBytes,
                 contentPreview: file.contentPreview,
+                ...(parsedJson ? { parsedJson } : {}),
               },
             }),
           ),
@@ -2341,7 +2474,23 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
   });
 
   let final: GenerateTextResult;
-  try {
+  if (
+    unresolvedWorkflowOutcomes.length === 0 &&
+    toolResults.length >= 6 &&
+    (hasMeaningfulSlidesWrite(toolResults) ||
+      hasSuccessfulTool(toolResults, "google.drive.createTextFile") ||
+      hasSuccessfulTool(toolResults, "notion.createPage"))
+  ) {
+    final = buildDeterministicFinalResult({
+      provider: input.provider,
+      model: input.model,
+      agentName: input.agent.name,
+      toolResults,
+      protectedActionRequests: state.protectedActionRequests,
+      llmResults,
+    });
+  } else {
+    try {
     final = await withLocalTimeout(
       client.generateText({
         systemPrompt: input.systemPrompt,
@@ -2369,6 +2518,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
       llmResults,
       error,
     });
+  }
   }
 
   const toolCallRecords = toolResults.filter(isToolCallOutputRecord);
