@@ -496,6 +496,7 @@ function copiedPresentationLink(results: unknown[]) {
 }
 
 function metricArtifactJson(results: unknown[]) {
+  const parsedCandidates: Array<{ name: string; data: Record<string, unknown> }> = [];
   for (const result of successfulToolResults(results)) {
     const candidates = [
       ...asObjectArray(result.artifacts),
@@ -517,14 +518,21 @@ function metricArtifactJson(results: unknown[]) {
       }
 
       try {
-        return JSON.parse(preview) as Record<string, unknown>;
+        parsedCandidates.push({
+          name,
+          data: JSON.parse(preview) as Record<string, unknown>,
+        });
       } catch {
         continue;
       }
     }
   }
 
-  return {};
+  return (
+    parsedCandidates.find((candidate) => candidate.name.includes("report_data"))?.data ??
+    parsedCandidates.find((candidate) => candidate.name.includes("metrics"))?.data ??
+    {}
+  );
 }
 
 function normalizedDeckText(deckMap: Record<string, unknown>) {
@@ -1414,7 +1422,7 @@ function buildFinalPrompt(input: {
   missingWorkflowOutcomes: string[];
 }) {
   return [
-    input.basePrompt,
+    compactBasePromptForPlanner(input.basePrompt),
     "",
     "Tool execution results:",
     JSON.stringify(compactToolResultsForPrompt(input.toolResults), null, 2),
@@ -1903,6 +1911,7 @@ async function executeOneTool(input: {
         targetMarket: asString(request.targetMarket),
         expectedCurrency: asString(request.expectedCurrency),
       });
+      const auditResult = asRecord(result);
       const artifact = artifactOutput(
         await createArtifact({
           agentRunId: input.agentRunId,
@@ -1915,6 +1924,19 @@ async function executeOneTool(input: {
         }),
       );
       artifacts.push(artifact);
+      result = {
+        presentationId: auditResult.presentationId,
+        title: auditResult.title,
+        targetClient: auditResult.targetClient,
+        targetMarket: auditResult.targetMarket,
+        expectedCurrency: auditResult.expectedCurrency,
+        passed: auditResult.passed,
+        score: auditResult.score,
+        staleReferences: auditResult.staleReferences,
+        missingExpectedValues: auditResult.missingExpectedValues,
+        slideStatuses: auditResult.slideStatuses,
+        recommendations: auditResult.recommendations,
+      };
     }
 
     if (toolName === "notion.createPage") {
