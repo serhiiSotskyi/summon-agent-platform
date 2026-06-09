@@ -1821,13 +1821,17 @@ async function executeOneTool(input: {
     let result: unknown;
 
     if (toolName === "python.run") {
-      const sandbox = await runPythonInSandbox({
-        runId: input.agentRunId,
-        files: input.agent.files,
-        code: asString(request.code),
-        entryFile: asString(request.entryFile),
-        args: asStringArray(request.args),
-      });
+      const sandbox = await withLocalTimeout(
+        runPythonInSandbox({
+          runId: input.agentRunId,
+          files: input.agent.files,
+          code: asString(request.code),
+          entryFile: asString(request.entryFile),
+          args: asStringArray(request.args),
+        }),
+        "python.run",
+        75_000,
+      );
       const generatedArtifacts = [];
       for (const file of sandbox.generatedFiles) {
         generatedArtifacts.push(
