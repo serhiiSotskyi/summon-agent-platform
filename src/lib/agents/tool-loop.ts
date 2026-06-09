@@ -703,6 +703,80 @@ function reportDeckCommentary(reportData: Record<string, unknown>) {
   ].join("\n");
 }
 
+function reportMissingSections(reportData: Record<string, unknown>) {
+  return [
+    ...asStringArray(reportData.missing_data_sections),
+    ...asStringArray(reportData.recommended_placeholder_slides),
+  ];
+}
+
+function placeholderReason(reportData: Record<string, unknown>, slideText: string) {
+  const lowerSlideText = slideText.toLowerCase();
+  const missing = reportMissingSections(reportData);
+  const matching = missing.filter((section) => {
+    const lower = section.toLowerCase();
+    return lower
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 5)
+      .some((token) => lowerSlideText.includes(token));
+  });
+
+  return matching.slice(0, 2).join(" ") || missing.slice(0, 2).join(" ");
+}
+
+function shouldPlaceholderReportSlide(reportData: Record<string, unknown>, slideText: string) {
+  const missingText = reportMissingSections(reportData).join(" ").toLowerCase();
+  const lowerSlideText = slideText.toLowerCase();
+  const rules = [
+    {
+      missing: ["auction"],
+      slide: ["auction insight", "impression share", "outranking", "overlap rate"],
+    },
+    {
+      missing: ["trend", "yoy", "prior-year", "prior year"],
+      slide: ["google trends", "demand trend", "source: google trends"],
+    },
+    {
+      missing: ["plans", "next steps", "client updates", "human-provided context"],
+      slide: ["next steps", "other updates", "testing", "ad copy test", "ai max", "ad monitor", "price inclusion"],
+    },
+  ];
+
+  return rules.some(
+    (rule) =>
+      rule.missing.some((term) => missingText.includes(term)) &&
+      rule.slide.some((term) => lowerSlideText.includes(term)),
+  );
+}
+
+function placeholderTextForSlide(reportData: Record<string, unknown>, slideText: string) {
+  const reason = placeholderReason(reportData, slideText);
+  return [
+    "Placeholder - supporting data was not provided for this run.",
+    reason ? `Reason: ${reason}` : "",
+    "Attach the relevant export, memory note, or planning input and rerun the agent to populate this slide.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function shouldPreservePlaceholderElement(text: string, slideTitle: string) {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized === slideTitle.trim().toLowerCase()) {
+    return true;
+  }
+  if (/^q[1-4]\s+\d{4}/i.test(text)) {
+    return true;
+  }
+  if (/summon digital|confidential|prepared by summon|wendy wu tours \|/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 function genericReportDeckBatchRequests(results: unknown[]) {
   const reportData = metricArtifactJson(results);
   const metadata = reportMetadataFromArtifact(reportData);
@@ -734,6 +808,29 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
 
     const textElements = asObjectArray(slide.textElements);
+    const slideText = textElements.map((element) => asString(element.text)).join(" ");
+    const slideTitle = asString(slide.titleCandidate);
+    if (shouldPlaceholderReportSlide(reportData, slideText)) {
+      let wrotePlaceholder = false;
+      for (const element of textElements) {
+        const text = asString(element.text);
+        if (shouldPreservePlaceholderElement(text, slideTitle)) {
+          continue;
+        }
+
+        let replacement = "—";
+        if (!wrotePlaceholder && text.length > 18) {
+          replacement = placeholderTextForSlide(reportData, slideText);
+          wrotePlaceholder = true;
+        } else if (/^source:/i.test(text)) {
+          replacement = "Source: Not provided in uploaded run data";
+        }
+
+        pushGenericSlideReplacement(requests, seen, slideObjectId, text, replacement);
+      }
+      continue;
+    }
+
     for (const term of nonCurrencyStaleTerms) {
       let replacement = targetLabel || market || client;
       const normalizedTerm = term.trim().toLowerCase();
@@ -750,7 +847,6 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       }
     }
 
-    const slideText = textElements.map((element) => asString(element.text)).join(" ");
     if (/quarterly|performance report|qbr|report/i.test(slideText) && metadata.period) {
       pushGenericSlideReplacement(
         requests,
