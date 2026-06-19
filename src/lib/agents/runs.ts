@@ -11,6 +11,13 @@ import {
 import { canRunAgent } from "@/lib/app/permissions";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { collectReadOnlyConnectorContext } from "@/lib/connectors/read-only";
+import {
+  batchUpdateGoogleSlides,
+  replaceGoogleSlidesText,
+  updateGoogleSheetRange,
+  updateGoogleSlidesTableCell,
+  updateGoogleSlidesTextElement,
+} from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
 import { llmProviderSchema } from "@/lib/env";
 import { createLlmClient } from "@/lib/llm";
@@ -47,6 +54,29 @@ function asJsonObject(value: unknown): Prisma.InputJsonObject {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Prisma.InputJsonObject)
     : {};
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asObjectArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
 }
 
 function connectorName(key: string) {
@@ -212,6 +242,22 @@ async function createApprovalIfNeeded({
     return existing;
   }
 
+  const blockedToolCalls = await db.toolCall.findMany({
+    where: {
+      agentRunId,
+      status: "BLOCKED",
+    },
+    orderBy: { loggedAt: "asc" },
+    select: {
+      id: true,
+      toolName: true,
+      connectorType: true,
+      request: true,
+      error: true,
+      loggedAt: true,
+    },
+  });
+
   return db.approvalRequest.create({
     data: {
       workspaceId,
@@ -228,6 +274,14 @@ async function createApprovalIfNeeded({
             : "This run attempted protected actions that may affect external systems. Review before allowing future mutations.",
         mode: "protected_action_review",
         tools,
+        blockedToolCalls: blockedToolCalls.map((call) => ({
+          id: call.id,
+          toolName: call.toolName,
+          connectorType: call.connectorType,
+          request: call.request,
+          error: call.error,
+          loggedAt: call.loggedAt.toISOString(),
+        })),
         outputPreview: summarizeOutput(llmOutput),
       },
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7),
@@ -546,37 +600,207 @@ export async function executeApprovedAction(job: ApprovedActionJob) {
   }
 
   const executedAt = new Date();
-  const executionRecord: Prisma.InputJsonObject = {
+  const requestedAction = asRecord(approval.requestedAction);
+  const existingExecution = asRecord(requestedAction.execution);
+
+  if (Object.keys(existingExecution).length > 0) {
+    return approval.agentRun;
+  }
+
+  const runningExecution: Prisma.InputJsonObject = {
     approvalRequestId: approval.id,
-    status: "COMPLETED",
-    executedAt: executedAt.toISOString(),
+    status: "RUNNING",
+    startedAt: executedAt.toISOString(),
     executedBy: "agent-approved-actions-worker",
     reviewedById: job.reviewedById,
-    mode: "approval_record_only",
-    message:
-      "Approval execution completed in record-only mode. No external write connector handled this action.",
   };
 
-  if (!approval.agentRun) {
-    return db.approvalRequest.update({
-      where: { id: approval.id },
-      data: {
-        requestedAction: {
-          ...asJsonObject(approval.requestedAction),
-          execution: executionRecord,
-        },
+  await db.approvalRequest.update({
+    where: { id: approval.id },
+    data: {
+      requestedAction: {
+        ...requestedAction,
+        execution: runningExecution,
       },
-    });
+    },
+  });
+
+  const replayResults = [];
+  const blockedToolCalls = asObjectArray(requestedAction.blockedToolCalls);
+
+  for (const blockedToolCall of blockedToolCalls) {
+    const toolName = asString(blockedToolCall.toolName);
+    const originalRequest = asRecord(blockedToolCall.request);
+    const parameters = asRecord(originalRequest.parameters);
+    const toolCall = approval.agentRunId
+      ? await db.toolCall.create({
+          data: {
+            agentRunId: approval.agentRunId,
+            connectorType: toolName.split(".")[0] ?? "tool",
+            toolName,
+            status: "RUNNING",
+            startedAt: new Date(),
+            request: {
+              action: toolName,
+              parameters: parameters as Prisma.InputJsonObject,
+              approvedFromToolCallId: asString(blockedToolCall.id),
+            } as Prisma.InputJsonObject,
+            metadata: {
+              approvalReplay: true,
+              approvalRequestId: approval.id,
+            } as Prisma.InputJsonObject,
+          },
+        })
+      : null;
+    const startedAt = Date.now();
+
+    try {
+      const result = await executeApprovedTool({
+        workspaceId: approval.workspaceId,
+        toolName,
+        parameters,
+      });
+
+      if (toolCall) {
+        await db.toolCall.update({
+          where: { id: toolCall.id },
+          data: {
+            status: "SUCCEEDED",
+            response: result as Prisma.InputJsonValue,
+            completedAt: new Date(),
+            durationMs: Date.now() - startedAt,
+          },
+        });
+      }
+
+      replayResults.push({
+        toolName,
+        status: "SUCCEEDED",
+        result,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Approved action failed.";
+      if (toolCall) {
+        await db.toolCall.update({
+          where: { id: toolCall.id },
+          data: {
+            status: "FAILED",
+            error: message,
+            completedAt: new Date(),
+            durationMs: Date.now() - startedAt,
+          },
+        });
+      }
+
+      replayResults.push({
+        toolName,
+        status: "FAILED",
+        error: message,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+  }
+
+  const hadReplayPayload = replayResults.length > 0;
+  const replayFailed = replayResults.some((result) => result.status === "FAILED");
+  const finishedAt = new Date();
+  const executionRecord: Prisma.InputJsonObject = {
+    approvalRequestId: approval.id,
+    status: replayFailed ? "FAILED" : "COMPLETED",
+    executedAt: finishedAt.toISOString(),
+    executedBy: "agent-approved-actions-worker",
+    reviewedById: job.reviewedById,
+    mode: hadReplayPayload ? "approved_tool_replay" : "approval_record_only",
+    message: hadReplayPayload
+      ? replayFailed
+        ? "Approved action replay finished with one or more failed tool calls."
+        : "Approved action replay completed for supported connector tools."
+      : "Approval execution completed in record-only mode. No structured blocked tool payload was available.",
+    results: replayResults as unknown as Prisma.InputJsonValue,
+  };
+
+  await db.approvalRequest.update({
+    where: { id: approval.id },
+    data: {
+      requestedAction: {
+        ...requestedAction,
+        execution: executionRecord,
+      },
+    },
+  });
+
+  if (!approval.agentRun) {
+    return db.approvalRequest.findUnique({ where: { id: approval.id } });
   }
 
   return db.agentRun.update({
     where: { id: approval.agentRun.id },
     data: {
-      summary: "Protected action approval was executed in record-only mode.",
+      summary: hadReplayPayload
+        ? replayFailed
+          ? "Protected action approval replay finished with failures."
+          : "Protected action approval replay completed."
+        : "Protected action approval was executed in record-only mode.",
       output: {
         ...asJsonObject(approval.agentRun.output),
         approvedActionExecution: executionRecord,
       },
     },
   });
+}
+
+async function executeApprovedTool(input: {
+  workspaceId: string;
+  toolName: string;
+  parameters: Record<string, unknown>;
+}) {
+  switch (input.toolName) {
+    case "google.sheets.updateRange":
+      return updateGoogleSheetRange({
+        workspaceId: input.workspaceId,
+        spreadsheetId: asString(input.parameters.spreadsheetId),
+        range: asString(input.parameters.range),
+        values: Array.isArray(input.parameters.values)
+          ? (input.parameters.values as unknown[][])
+          : [],
+      }) as Promise<Prisma.InputJsonObject>;
+    case "google.slides.updateText":
+      return updateGoogleSlidesTextElement({
+        workspaceId: input.workspaceId,
+        presentationId: asString(input.parameters.presentationId),
+        objectId: asString(input.parameters.objectId),
+        text: asString(input.parameters.text),
+      }) as Promise<Prisma.InputJsonObject>;
+    case "google.slides.updateTableCell":
+      return updateGoogleSlidesTableCell({
+        workspaceId: input.workspaceId,
+        presentationId: asString(input.parameters.presentationId),
+        tableObjectId: asString(input.parameters.tableObjectId),
+        rowIndex: asNumber(input.parameters.rowIndex),
+        columnIndex: asNumber(input.parameters.columnIndex),
+        text: asString(input.parameters.text),
+      }) as Promise<Prisma.InputJsonObject>;
+    case "google.slides.replaceText":
+      return replaceGoogleSlidesText({
+        workspaceId: input.workspaceId,
+        presentationId: asString(input.parameters.presentationId),
+        replacements: asObjectArray(input.parameters.replacements)
+          .map((replacement) => ({
+            find: asString(replacement.find),
+            replace: asString(replacement.replace),
+          }))
+          .filter((replacement) => replacement.find),
+      }) as Promise<Prisma.InputJsonObject>;
+    case "google.slides.batchUpdate":
+      return batchUpdateGoogleSlides({
+        workspaceId: input.workspaceId,
+        presentationId: asString(input.parameters.presentationId),
+        requests: asObjectArray(input.parameters.requests),
+      }) as Promise<Prisma.InputJsonObject>;
+    default:
+      throw new Error(
+        `Approved action replay is not implemented for ${input.toolName}. No external write was executed.`,
+      );
+  }
 }
