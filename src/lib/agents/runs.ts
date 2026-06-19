@@ -736,17 +736,26 @@ export async function executeApprovedAction(job: ApprovedActionJob) {
     return db.approvalRequest.findUnique({ where: { id: approval.id } });
   }
 
+  const approvalExecutionSummary = hadReplayPayload
+    ? replayFailed
+      ? "Protected action approval replay finished with failures."
+      : "Protected action approval replay completed."
+    : "Protected action approval was executed in record-only mode.";
+  const currentSummary = approval.agentRun.summary;
+  const shouldReplaceRunSummary =
+    !currentSummary ||
+    currentSummary === "Manual run queued." ||
+    currentSummary === "Worker picked up the run." ||
+    currentSummary.startsWith("Protected action approval");
+
   return db.agentRun.update({
     where: { id: approval.agentRun.id },
     data: {
-      summary: hadReplayPayload
-        ? replayFailed
-          ? "Protected action approval replay finished with failures."
-          : "Protected action approval replay completed."
-        : "Protected action approval was executed in record-only mode.",
+      summary: shouldReplaceRunSummary ? approvalExecutionSummary : currentSummary,
       output: {
         ...asJsonObject(approval.agentRun.output),
         approvedActionExecution: executionRecord,
+        approvedActionExecutionSummary: approvalExecutionSummary,
       },
     },
   });
