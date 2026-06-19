@@ -457,6 +457,47 @@ function compactBasePromptForPlanner(basePrompt: string) {
   ].join("\n");
 }
 
+function compactConnectorEvidenceForFinalPrompt(basePrompt: string) {
+  const marker = "\nConnector evidence:";
+  const markerIndex = basePrompt.indexOf(marker);
+  if (markerIndex < 0) {
+    return "No connector evidence section was supplied.";
+  }
+
+  const rawEvidence = basePrompt.slice(markerIndex + marker.length).trim();
+  if (!rawEvidence) {
+    return "Connector evidence section was supplied but empty.";
+  }
+
+  try {
+    const contexts = asObjectArray(JSON.parse(rawEvidence));
+    const compactContexts = contexts.map((context) => ({
+      connectorType: context.connectorType,
+      connectorName: context.connectorName,
+      status: context.status,
+      summary: compactText(context.summary, 600),
+      blockers: asStringArray(context.blockers),
+      records: asObjectArray(context.records)
+        .slice(0, 12)
+        .map((record) => ({
+          source: record.source,
+          title: record.title,
+          url: record.url,
+          type: record.type,
+          query: record.query,
+          lastUpdated: record.lastUpdated,
+          evidenceId: record.evidenceId,
+          snippet: compactText(record.snippet, 900),
+          exportError: record.exportError,
+        })),
+    }));
+
+    return JSON.stringify(compactContexts, null, 2);
+  } catch {
+    return compactText(rawEvidence, 12000) as string;
+  }
+}
+
 function successfulToolResults(results: unknown[]) {
   return results
     .filter(isToolCallOutputRecord)
@@ -1879,11 +1920,15 @@ function buildFinalPrompt(input: {
   return [
     compactBasePromptForPlanner(input.basePrompt),
     "",
+    "Connector evidence for final answer:",
+    compactConnectorEvidenceForFinalPrompt(input.basePrompt),
+    "",
     "Tool execution results:",
     JSON.stringify(compactToolResultsForPrompt(input.toolResults), null, 2),
     "",
     "Write the final response for the Summon team.",
     "Include evidence used, generated artifacts with links, what was not verified, recommendations, and any blocked protected actions.",
+    "If connector evidence records are listed above, cite their source titles and URLs when relevant. Do not say no connector evidence was supplied unless the connector evidence section is empty or contains only blockers.",
     input.missingWorkflowOutcomes.length > 0
       ? `Unresolved required workflow outcomes: ${input.missingWorkflowOutcomes.join("; ")}. Be explicit that the run is incomplete.`
       : "All inferred required workflow outcomes were completed.",
