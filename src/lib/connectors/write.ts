@@ -332,6 +332,114 @@ function rowsToCsv(rows: unknown[][]) {
   return rows.map((row) => row.map(csvCell).join(",")).join("\n");
 }
 
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (quoted) {
+      if (char === '"' && next === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else if (char !== "\r") {
+      cell += char;
+    }
+  }
+
+  row.push(cell);
+  if (row.some((value) => value !== "") || rows.length === 0) {
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function columnToIndex(column: string) {
+  return column
+    .toUpperCase()
+    .split("")
+    .reduce((total, char) => total * 26 + char.charCodeAt(0) - 64, 0) - 1;
+}
+
+function parseA1Range(range: string) {
+  const bareRange = range.split("!").pop()?.trim() || "A1";
+  const match = bareRange.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    startColumn: columnToIndex(match[1]),
+    startRow: Number(match[2]) - 1,
+    endColumn: match[3] ? columnToIndex(match[3]) : undefined,
+    endRow: match[4] ? Number(match[4]) - 1 : undefined,
+  };
+}
+
+function readRowsRange(rows: string[][], range: string) {
+  const parsed = parseA1Range(range);
+  if (!parsed) {
+    return rows;
+  }
+
+  const endRow = parsed.endRow ?? parsed.startRow;
+  const endColumn = parsed.endColumn ?? parsed.startColumn;
+
+  return rows
+    .slice(parsed.startRow, endRow + 1)
+    .map((row) => row.slice(parsed.startColumn, endColumn + 1));
+}
+
+function writeRowsRange(rows: string[][], range: string, values: unknown[][]) {
+  const parsed = parseA1Range(range);
+  if (!parsed) {
+    return rows;
+  }
+
+  const nextRows = rows.map((row) => [...row]);
+  values.forEach((valueRow, rowOffset) => {
+    const targetRowIndex = parsed.startRow + rowOffset;
+    while (nextRows.length <= targetRowIndex) {
+      nextRows.push([]);
+    }
+
+    valueRow.forEach((value, columnOffset) => {
+      const targetColumnIndex = parsed.startColumn + columnOffset;
+      while (nextRows[targetRowIndex].length <= targetColumnIndex) {
+        nextRows[targetRowIndex].push("");
+      }
+
+      nextRows[targetRowIndex][targetColumnIndex] =
+        value === null || value === undefined ? "" : String(value);
+    });
+  });
+
+  return nextRows;
+}
+
 async function getWorkspaceConnectorCredential(
   workspaceId: string,
   connectorType: string,
@@ -1499,21 +1607,132 @@ export async function readGoogleSheetRange(input: {
   range: string;
 }) {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  try {
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        input.spreadsheetId,
+      )}/values/${encodeURIComponent(input.range)}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+    const payload = await readJson(response);
+    if (!response.ok) {
+      const message = await apiErrorMessage("Google Sheets read", response, payload);
+      throw new Error(message);
+    }
+
+    return payload;
+  } catch (error) {
+    if (isGoogleApiDisabledError(error)) {
+      const csv = await exportGoogleSheetCsvViaDrive({
+        accessToken,
+        spreadsheetId: input.spreadsheetId,
+      });
+      const values = readRowsRange(parseCsv(csv), input.range);
+
+      return {
+        range: input.range,
+        majorDimension: "ROWS",
+        values,
+        mode: "drive_csv_export_fallback",
+        note: "Google Sheets API is disabled. Returned values from Drive CSV export of the first sheet.",
+      };
+    }
+
+    throw error;
+  }
+}
+
+async function exportGoogleSheetCsvViaDrive(input: {
+  accessToken: string;
+  spreadsheetId: string;
+}) {
   const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
       input.spreadsheetId,
-    )}/values/${encodeURIComponent(input.range)}`,
+    )}/export?mimeType=${encodeURIComponent("text/csv")}`,
     {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: { Authorization: `Bearer ${input.accessToken}` },
     },
   );
-  const payload = await readJson(response);
+  const text = await response.text();
+
   if (!response.ok) {
-    const message = await apiErrorMessage("Google Sheets read", response, payload);
+    let payload: unknown = text;
+    try {
+      payload = JSON.parse(text) as unknown;
+    } catch {
+      // Keep raw text for the error message.
+    }
+    const message = await apiErrorMessage("Google Sheets Drive export", response, payload);
     throw new Error(message);
   }
 
-  return payload;
+  return text;
+}
+
+async function updateGoogleSheetViaDriveUpload(input: {
+  accessToken: string;
+  spreadsheetId: string;
+  range: string;
+  values: unknown[][];
+}) {
+  const currentCsv = await exportGoogleSheetCsvViaDrive({
+    accessToken: input.accessToken,
+    spreadsheetId: input.spreadsheetId,
+  });
+  const nextRows = writeRowsRange(parseCsv(currentCsv), input.range, input.values);
+  const csv = rowsToCsv(nextRows);
+  const metadata = { mimeType: GOOGLE_SHEETS_MIME };
+  const { boundary, body } = toMultipartBody([
+    {
+      headers: [
+        'Content-Disposition: form-data; name="metadata"',
+        "Content-Type: application/json; charset=UTF-8",
+      ].join("\r\n"),
+      body: JSON.stringify(metadata),
+    },
+    {
+      headers: [
+        'Content-Disposition: form-data; name="file"; filename="updated-sheet.csv"',
+        "Content-Type: text/csv; charset=UTF-8",
+      ].join("\r\n"),
+      body: csv,
+    },
+  ]);
+  const response = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
+      input.spreadsheetId,
+    )}?uploadType=multipart&fields=id,name,mimeType,webViewLink`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const payload = (await readJson(response)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage("Google Sheets Drive update", response, payload);
+    throw new Error(message);
+  }
+
+  return {
+    spreadsheetId: payload.id,
+    updatedRange: input.range,
+    updatedRows: input.values.length,
+    fileName: payload.name,
+    webViewLink: payload.webViewLink ?? null,
+    mimeType: payload.mimeType ?? GOOGLE_SHEETS_MIME,
+    mode: "drive_csv_update_fallback",
+    note: "Google Sheets API is disabled. Updated the first sheet by replacing the run-owned spreadsheet contents through Drive CSV upload.",
+  };
 }
 
 async function createGoogleSheetViaDriveUpload(input: {
@@ -1635,7 +1854,7 @@ export async function createGoogleSheet(input: {
       mode: "sheets_api",
     };
   } catch (error) {
-    if (rows.length > 0 && isGoogleApiDisabledError(error)) {
+    if (isGoogleApiDisabledError(error)) {
       return createGoogleSheetViaDriveUpload({
         accessToken,
         title,
@@ -1654,30 +1873,43 @@ export async function updateGoogleSheetRange(input: {
   values: unknown[][];
 }) {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
-  const response = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-      input.spreadsheetId,
-    )}/values/${encodeURIComponent(input.range)}?valueInputOption=USER_ENTERED`,
-    {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+  try {
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        input.spreadsheetId,
+      )}/values/${encodeURIComponent(input.range)}?valueInputOption=USER_ENTERED`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          range: input.range,
+          majorDimension: "ROWS",
+          values: input.values,
+        }),
       },
-      body: JSON.stringify({
-        range: input.range,
-        majorDimension: "ROWS",
-        values: input.values,
-      }),
-    },
-  );
-  const payload = await readJson(response);
-  if (!response.ok) {
-    const message = await apiErrorMessage("Google Sheets update", response, payload);
-    throw new Error(message);
-  }
+    );
+    const payload = await readJson(response);
+    if (!response.ok) {
+      const message = await apiErrorMessage("Google Sheets update", response, payload);
+      throw new Error(message);
+    }
 
-  return payload;
+    return payload;
+  } catch (error) {
+    if (isGoogleApiDisabledError(error)) {
+      return updateGoogleSheetViaDriveUpload({
+        accessToken,
+        spreadsheetId: input.spreadsheetId,
+        range: input.range,
+        values: input.values,
+      });
+    }
+
+    throw error;
+  }
 }
 
 export async function batchUpdateGoogleSlides(input: {
