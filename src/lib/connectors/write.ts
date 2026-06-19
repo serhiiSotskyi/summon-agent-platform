@@ -100,6 +100,7 @@ type GoogleDriveFileResult = {
   fileName: string;
   mimeType: string | null;
   webViewLink: string | null;
+  mode?: string;
 };
 
 type GoogleSlidesTextElement = {
@@ -271,6 +272,44 @@ async function apiErrorMessage(
   }
 
   return `${provider} API error ${response.status}: ${response.statusText}`;
+}
+
+function isGoogleApiDisabledError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /has not been used|disabled|accessNotConfigured|SERVICE_DISABLED/i.test(
+    message,
+  );
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function textToGoogleDocHtml(input: { title?: string; text: string }) {
+  const title = input.title ? `<h1>${escapeHtml(input.title)}</h1>` : "";
+  const body = input.text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+
+  return [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    '<meta charset="utf-8">',
+    "</head>",
+    "<body>",
+    title,
+    body || "<p></p>",
+    "</body>",
+    "</html>",
+  ].join("\n");
 }
 
 async function getWorkspaceConnectorCredential(
@@ -610,6 +649,180 @@ async function googleCredentialAndToken(workspaceId: string) {
 
 function googleFileFields() {
   return "id,name,mimeType,webViewLink";
+}
+
+async function getGoogleDriveMetadata(input: {
+  accessToken: string;
+  fileId: string;
+  provider?: string;
+}) {
+  const metadataResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      input.fileId,
+    )}?fields=${encodeURIComponent(googleFileFields())}`,
+    {
+      headers: { Authorization: `Bearer ${input.accessToken}` },
+    },
+  );
+  const metadataPayload = (await readJson(metadataResponse)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!metadataResponse.ok || !metadataPayload?.id) {
+    const message = await apiErrorMessage(
+      input.provider ?? "Google Drive file metadata",
+      metadataResponse,
+      metadataPayload,
+    );
+    throw new Error(message);
+  }
+
+  return {
+    fileId: metadataPayload.id,
+    fileName: metadataPayload.name ?? "Google file",
+    mimeType: metadataPayload.mimeType ?? null,
+    webViewLink: metadataPayload.webViewLink ?? null,
+  } satisfies GoogleDriveFileResult;
+}
+
+async function createGoogleDocViaDriveUpload(input: {
+  accessToken: string;
+  title: string;
+  text?: string;
+}) {
+  const metadata = {
+    name: input.title,
+    mimeType: GOOGLE_DOCS_MIME,
+  };
+  const html = textToGoogleDocHtml({ text: input.text ?? "" });
+  const { boundary, body } = toMultipartBody([
+    {
+      headers: [
+        'Content-Disposition: form-data; name="metadata"',
+        "Content-Type: application/json; charset=UTF-8",
+      ].join("\r\n"),
+      body: JSON.stringify(metadata),
+    },
+    {
+      headers: [
+        `Content-Disposition: form-data; name="file"; filename="${input.title.replace(/"/g, "")}.html"`,
+        "Content-Type: text/html; charset=UTF-8",
+      ].join("\r\n"),
+      body: html,
+    },
+  ]);
+
+  const response = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${encodeURIComponent(
+      googleFileFields(),
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const payload = (await readJson(response)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage("Google Drive Doc upload", response, payload);
+    throw new Error(message);
+  }
+
+  return {
+    documentId: payload.id,
+    fileId: payload.id,
+    fileName: payload.name ?? input.title,
+    mimeType: payload.mimeType ?? GOOGLE_DOCS_MIME,
+    webViewLink: payload.webViewLink ?? null,
+    mode: "drive_upload_conversion_fallback",
+  } satisfies GoogleDriveFileResult & { documentId: string };
+}
+
+async function exportGoogleDocTextViaDrive(input: {
+  accessToken: string;
+  documentId: string;
+}) {
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      input.documentId,
+    )}/export?mimeType=${encodeURIComponent("text/plain")}`,
+    {
+      headers: { Authorization: `Bearer ${input.accessToken}` },
+    },
+  );
+
+  if (!response.ok) {
+    const payload = await readJson(response);
+    const message = await apiErrorMessage("Google Drive Doc export", response, payload);
+    throw new Error(message);
+  }
+
+  return response.text();
+}
+
+async function updateGoogleDocViaDriveUpload(input: {
+  accessToken: string;
+  documentId: string;
+  text: string;
+}) {
+  const html = textToGoogleDocHtml({ text: input.text });
+  const { boundary, body } = toMultipartBody([
+    {
+      headers: [
+        'Content-Disposition: form-data; name="metadata"',
+        "Content-Type: application/json; charset=UTF-8",
+      ].join("\r\n"),
+      body: JSON.stringify({ mimeType: GOOGLE_DOCS_MIME }),
+    },
+    {
+      headers: [
+        'Content-Disposition: form-data; name="file"; filename="document.html"',
+        "Content-Type: text/html; charset=UTF-8",
+      ].join("\r\n"),
+      body: html,
+    },
+  ]);
+
+  const response = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
+      input.documentId,
+    )}?uploadType=multipart&fields=${encodeURIComponent(googleFileFields())}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const payload = (await readJson(response)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage(
+      "Google Drive Doc update upload",
+      response,
+      payload,
+    );
+    throw new Error(message);
+  }
+
+  return {
+    documentId: payload.id,
+    fileId: payload.id,
+    fileName: payload.name ?? "Google Doc",
+    mimeType: payload.mimeType ?? GOOGLE_DOCS_MIME,
+    webViewLink: payload.webViewLink ?? null,
+    mode: "drive_upload_conversion_fallback",
+  };
 }
 
 export async function copyGoogleDriveFile(input: {
@@ -982,55 +1195,124 @@ function readGoogleDocStructuralText(elements: unknown[]): string {
     .trim();
 }
 
+function applyGoogleDocTextFallbackRequests(input: {
+  text: string;
+  requests: Record<string, unknown>[];
+}) {
+  let text = input.text;
+  const replies: Array<Record<string, unknown>> = [];
+
+  for (const request of input.requests) {
+    const replaceAllText =
+      request.replaceAllText &&
+      typeof request.replaceAllText === "object" &&
+      !Array.isArray(request.replaceAllText)
+        ? (request.replaceAllText as Record<string, unknown>)
+        : null;
+    if (replaceAllText) {
+      const containsText =
+        replaceAllText.containsText &&
+        typeof replaceAllText.containsText === "object" &&
+        !Array.isArray(replaceAllText.containsText)
+          ? (replaceAllText.containsText as Record<string, unknown>)
+          : {};
+      const find = typeof containsText.text === "string" ? containsText.text : "";
+      const replaceText =
+        typeof replaceAllText.replaceText === "string"
+          ? replaceAllText.replaceText
+          : "";
+      if (!find) {
+        replies.push({ replaceAllText: { occurrencesChanged: 0 } });
+        continue;
+      }
+      const matchCase = containsText.matchCase !== false;
+      const escaped = find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, matchCase ? "g" : "gi");
+      const matches = text.match(regex);
+      const occurrencesChanged = matches?.length ?? 0;
+      text = text.replace(regex, replaceText);
+      replies.push({ replaceAllText: { occurrencesChanged } });
+      continue;
+    }
+
+    const insertText =
+      request.insertText &&
+      typeof request.insertText === "object" &&
+      !Array.isArray(request.insertText)
+        ? (request.insertText as Record<string, unknown>)
+        : null;
+    if (insertText) {
+      const insert = typeof insertText.text === "string" ? insertText.text : "";
+      const location =
+        insertText.location &&
+        typeof insertText.location === "object" &&
+        !Array.isArray(insertText.location)
+          ? (insertText.location as Record<string, unknown>)
+          : {};
+      const rawIndex =
+        typeof location.index === "number" && Number.isFinite(location.index)
+          ? location.index
+          : text.length + 1;
+      const index = Math.max(0, Math.min(text.length, rawIndex - 1));
+      text = `${text.slice(0, index)}${insert}${text.slice(index)}`;
+      replies.push({ insertText: {} });
+      continue;
+    }
+
+    replies.push({
+      unsupportedFallbackRequest: {
+        message:
+          "Drive conversion fallback only supports insertText and replaceAllText. Enable Google Docs API for full Docs batchUpdate support.",
+      },
+    });
+  }
+
+  return { text, replies };
+}
+
 export async function createGoogleDoc(input: {
   workspaceId: string;
   title: string;
 }): Promise<GoogleDriveFileResult & { documentId: string }> {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
-  const response = await fetch("https://docs.googleapis.com/v1/documents", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ title: input.title }),
+  let payload: { documentId?: string; title?: string } | null = null;
+  try {
+    const response = await fetch("https://docs.googleapis.com/v1/documents", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ title: input.title }),
+    });
+    payload = (await readJson(response)) as
+      | { documentId?: string; title?: string }
+      | null;
+
+    if (!response.ok || !payload?.documentId) {
+      const message = await apiErrorMessage("Google Docs create", response, payload);
+      throw new Error(message);
+    }
+  } catch (error) {
+    if (isGoogleApiDisabledError(error)) {
+      return createGoogleDocViaDriveUpload({
+        accessToken,
+        title: input.title,
+      });
+    }
+    throw error;
+  }
+
+  const metadataPayload = await getGoogleDriveMetadata({
+    accessToken,
+    fileId: payload.documentId,
+    provider: "Google Docs metadata",
   });
-  const payload = (await readJson(response)) as
-    | { documentId?: string; title?: string }
-    | null;
-
-  if (!response.ok || !payload?.documentId) {
-    const message = await apiErrorMessage("Google Docs create", response, payload);
-    throw new Error(message);
-  }
-
-  const metadataResponse = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-      payload.documentId,
-    )}?fields=${encodeURIComponent(googleFileFields())}`,
-    {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    },
-  );
-  const metadataPayload = (await readJson(metadataResponse)) as
-    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
-    | null;
-
-  if (!metadataResponse.ok || !metadataPayload?.id) {
-    const message = await apiErrorMessage(
-      "Google Docs metadata",
-      metadataResponse,
-      metadataPayload,
-    );
-    throw new Error(message);
-  }
-
   return {
     documentId: payload.documentId,
-    fileId: metadataPayload.id,
-    fileName: metadataPayload.name ?? payload.title ?? input.title,
+    ...metadataPayload,
+    fileName: metadataPayload.fileName ?? payload.title ?? input.title,
     mimeType: metadataPayload.mimeType ?? GOOGLE_DOCS_MIME,
-    webViewLink: metadataPayload.webViewLink ?? null,
   };
 }
 
@@ -1039,23 +1321,54 @@ export async function readGoogleDocText(input: {
   documentId: string;
 }) {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
-  const response = await fetch(
-    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(input.documentId)}`,
-    {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    },
-  );
-  const payload = (await readJson(response)) as
+  let payload:
     | {
         documentId?: string;
         title?: string;
         body?: { content?: unknown[] };
       }
-    | null;
+    | null = null;
+  try {
+    const response = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(input.documentId)}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+    payload = (await readJson(response)) as
+      | {
+          documentId?: string;
+          title?: string;
+          body?: { content?: unknown[] };
+        }
+      | null;
 
-  if (!response.ok || !payload?.documentId) {
-    const message = await apiErrorMessage("Google Docs read", response, payload);
-    throw new Error(message);
+    if (!response.ok || !payload?.documentId) {
+      const message = await apiErrorMessage("Google Docs read", response, payload);
+      throw new Error(message);
+    }
+  } catch (error) {
+    if (isGoogleApiDisabledError(error)) {
+      const [text, metadata] = await Promise.all([
+        exportGoogleDocTextViaDrive({
+          accessToken,
+          documentId: input.documentId,
+        }),
+        getGoogleDriveMetadata({
+          accessToken,
+          fileId: input.documentId,
+          provider: "Google Docs fallback metadata",
+        }),
+      ]);
+      return {
+        documentId: input.documentId,
+        title: metadata.fileName,
+        text,
+        preview: text.slice(0, 8000),
+        mode: "drive_export_fallback",
+      };
+    }
+    throw error;
   }
 
   const content = Array.isArray(payload.body?.content)
@@ -1077,31 +1390,67 @@ export async function batchUpdateGoogleDoc(input: {
   requests: Record<string, unknown>[];
 }) {
   const { accessToken } = await googleCredentialAndToken(input.workspaceId);
-  const response = await fetch(
-    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(
-      input.documentId,
-    )}:batchUpdate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+  try {
+    const response = await fetch(
+      `https://docs.googleapis.com/v1/documents/${encodeURIComponent(
+        input.documentId,
+      )}:batchUpdate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ requests: input.requests }),
       },
-      body: JSON.stringify({ requests: input.requests }),
-    },
-  );
-  const payload = await readJson(response);
+    );
+    const payload = await readJson(response);
 
-  if (!response.ok) {
-    const message = await apiErrorMessage("Google Docs batchUpdate", response, payload);
-    throw new Error(message);
+    if (!response.ok) {
+      const message = await apiErrorMessage("Google Docs batchUpdate", response, payload);
+      throw new Error(message);
+    }
+
+    return {
+      documentId: input.documentId,
+      replies: (payload as { replies?: unknown[] } | null)?.replies ?? [],
+      requestCount: input.requests.length,
+    };
+  } catch (error) {
+    if (!isGoogleApiDisabledError(error)) {
+      throw error;
+    }
+
+    let currentText = "";
+    try {
+      currentText = await exportGoogleDocTextViaDrive({
+        accessToken,
+        documentId: input.documentId,
+      });
+    } catch {
+      currentText = "";
+    }
+    const applied = applyGoogleDocTextFallbackRequests({
+      text: currentText,
+      requests: input.requests,
+    });
+    const updated = await updateGoogleDocViaDriveUpload({
+      accessToken,
+      documentId: input.documentId,
+      text: applied.text,
+    });
+
+    return {
+      documentId: input.documentId,
+      replies: applied.replies,
+      requestCount: input.requests.length,
+      mode: "drive_upload_conversion_fallback",
+      fileId: updated.fileId,
+      fileName: updated.fileName,
+      mimeType: updated.mimeType,
+      webViewLink: updated.webViewLink,
+    };
   }
-
-  return {
-    documentId: input.documentId,
-    replies: (payload as { replies?: unknown[] } | null)?.replies ?? [],
-    requestCount: input.requests.length,
-  };
 }
 
 export async function replaceGoogleDocText(input: {
