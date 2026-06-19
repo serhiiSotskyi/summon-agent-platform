@@ -84,6 +84,7 @@ type RuntimeState = {
 
 type WorkflowRequirementState = {
   requiresSlidesDeckWrite: boolean;
+  requiresGoogleDocWrite: boolean;
   requiresNotionPublish: boolean;
 };
 
@@ -492,9 +493,19 @@ function inferWorkflowRequirements(input: {
   const asksForNotionPublish =
     /\b(notion|memory page|summon memory|publish|create page|add .*memory)\b/.test(prompt) &&
     /\b(create|publish|add|write|summarize|link)\b/.test(prompt);
+  const hasGoogleDocsTools =
+    input.availableTools.includes("google.docs.createDocument") &&
+    (input.availableTools.includes("google.docs.batchUpdate") ||
+      input.availableTools.includes("google.docs.replaceText"));
+  const mentionsGoogleDocOutput =
+    /\b(google doc|google docs|doc|document|memo|brief|write-up|writeup|report)\b/.test(
+      prompt,
+    );
 
   return {
     requiresSlidesDeckWrite: hasSlidesTools && mentionsSlidesOutput && asksToCreateOrPopulate,
+    requiresGoogleDocWrite:
+      hasGoogleDocsTools && mentionsGoogleDocOutput && asksToCreateOrPopulate,
     requiresNotionPublish: hasNotionTool && asksForNotionPublish,
   };
 }
@@ -510,6 +521,39 @@ function hasMeaningfulSlidesWrite(results: unknown[]) {
     }
 
     if (result.toolName !== "google.slides.replaceText") {
+      return false;
+    }
+
+    const replacementResults = asObjectArray(asRecord(result.result).replacementResults);
+    return replacementResults.some((replacement) => {
+      const changed = replacement.occurrencesChanged;
+      return typeof changed === "number" && changed > 0;
+    });
+  });
+}
+
+function hasRunOwnedGoogleDoc(results: unknown[]) {
+  return successfulToolResults(results).some((result) => {
+    if (result.toolName === "google.docs.createDocument") {
+      return true;
+    }
+
+    if (result.toolName !== "google.drive.copyFile") {
+      return false;
+    }
+
+    const mimeType = asString(asRecord(result.result).mimeType);
+    return mimeType === "application/vnd.google-apps.document";
+  });
+}
+
+function hasMeaningfulGoogleDocWrite(results: unknown[]) {
+  return successfulToolResults(results).some((result) => {
+    if (result.toolName === "google.docs.batchUpdate") {
+      return true;
+    }
+
+    if (result.toolName !== "google.docs.replaceText") {
       return false;
     }
 
@@ -581,6 +625,25 @@ function missingWorkflowOutcomes(input: {
     ) {
       missing.push(
         "The latest generated deck audit failed. Fix stale template content, missing KPI values, or placeholder decisions and rerun the audit.",
+      );
+    }
+  }
+
+  if (input.requirements.requiresGoogleDocWrite) {
+    if (!hasRunOwnedGoogleDoc(input.toolResults)) {
+      missing.push(
+        "Create or copy a run-owned Google Doc with google.docs.createDocument or google.drive.copyFile before writing document output.",
+      );
+    } else if (!hasMeaningfulGoogleDocWrite(input.toolResults)) {
+      missing.push(
+        "Write the required Google Doc output with google.docs.batchUpdate or google.docs.replaceText. Do not stop after creating an empty document.",
+      );
+    } else if (
+      input.availableTools.includes("google.docs.readText") &&
+      !hasSuccessfulTool(input.toolResults, "google.docs.readText")
+    ) {
+      missing.push(
+        "Read back the generated Google Doc with google.docs.readText to verify the output before finalizing.",
       );
     }
   }
