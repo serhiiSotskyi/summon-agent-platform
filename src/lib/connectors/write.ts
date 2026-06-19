@@ -111,6 +111,7 @@ type GoogleSlidesTextElement = {
 };
 
 const GOOGLE_SLIDES_MIME = "application/vnd.google-apps.presentation";
+const GOOGLE_DOCS_MIME = "application/vnd.google-apps.document";
 const GOOGLE_PPTX_MIME =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const GOOGLE_SCOPE_WARNING =
@@ -920,6 +921,207 @@ export async function createGoogleDriveTextFile(input: {
     mimeType: payload.mimeType ?? input.mimeType ?? "text/plain",
     webViewLink: payload.webViewLink ?? null,
   };
+}
+
+function readGoogleDocTextElements(value: unknown): string {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+  const textRun = record.textRun && typeof record.textRun === "object"
+    ? (record.textRun as Record<string, unknown>)
+    : {};
+  return typeof textRun.content === "string" ? textRun.content : "";
+}
+
+function readGoogleDocStructuralText(elements: unknown[]): string {
+  return elements
+    .map((element) => {
+      const record =
+        element && typeof element === "object" && !Array.isArray(element)
+          ? (element as Record<string, unknown>)
+          : {};
+      const paragraph =
+        record.paragraph && typeof record.paragraph === "object"
+          ? (record.paragraph as Record<string, unknown>)
+          : null;
+      if (paragraph && Array.isArray(paragraph.elements)) {
+        return paragraph.elements.map(readGoogleDocTextElements).join("");
+      }
+
+      const table =
+        record.table && typeof record.table === "object"
+          ? (record.table as Record<string, unknown>)
+          : null;
+      if (table && Array.isArray(table.tableRows)) {
+        return table.tableRows
+          .map((row) => {
+            const rowRecord =
+              row && typeof row === "object" && !Array.isArray(row)
+                ? (row as Record<string, unknown>)
+                : {};
+            return Array.isArray(rowRecord.tableCells)
+              ? rowRecord.tableCells
+                  .map((cell) => {
+                    const cellRecord =
+                      cell && typeof cell === "object" && !Array.isArray(cell)
+                        ? (cell as Record<string, unknown>)
+                        : {};
+                    return Array.isArray(cellRecord.content)
+                      ? readGoogleDocStructuralText(cellRecord.content)
+                      : "";
+                  })
+                  .join("\t")
+              : "";
+          })
+          .join("\n");
+      }
+
+      return "";
+    })
+    .join("")
+    .trim();
+}
+
+export async function createGoogleDoc(input: {
+  workspaceId: string;
+  title: string;
+}): Promise<GoogleDriveFileResult & { documentId: string }> {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch("https://docs.googleapis.com/v1/documents", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ title: input.title }),
+  });
+  const payload = (await readJson(response)) as
+    | { documentId?: string; title?: string }
+    | null;
+
+  if (!response.ok || !payload?.documentId) {
+    const message = await apiErrorMessage("Google Docs create", response, payload);
+    throw new Error(message);
+  }
+
+  const metadataResponse = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      payload.documentId,
+    )}?fields=${encodeURIComponent(googleFileFields())}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  const metadataPayload = (await readJson(metadataResponse)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!metadataResponse.ok || !metadataPayload?.id) {
+    const message = await apiErrorMessage(
+      "Google Docs metadata",
+      metadataResponse,
+      metadataPayload,
+    );
+    throw new Error(message);
+  }
+
+  return {
+    documentId: payload.documentId,
+    fileId: metadataPayload.id,
+    fileName: metadataPayload.name ?? payload.title ?? input.title,
+    mimeType: metadataPayload.mimeType ?? GOOGLE_DOCS_MIME,
+    webViewLink: metadataPayload.webViewLink ?? null,
+  };
+}
+
+export async function readGoogleDocText(input: {
+  workspaceId: string;
+  documentId: string;
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(input.documentId)}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  const payload = (await readJson(response)) as
+    | {
+        documentId?: string;
+        title?: string;
+        body?: { content?: unknown[] };
+      }
+    | null;
+
+  if (!response.ok || !payload?.documentId) {
+    const message = await apiErrorMessage("Google Docs read", response, payload);
+    throw new Error(message);
+  }
+
+  const content = Array.isArray(payload.body?.content)
+    ? payload.body.content
+    : [];
+  const text = readGoogleDocStructuralText(content);
+
+  return {
+    documentId: payload.documentId,
+    title: payload.title ?? "Untitled document",
+    text,
+    preview: text.slice(0, 8000),
+  };
+}
+
+export async function batchUpdateGoogleDoc(input: {
+  workspaceId: string;
+  documentId: string;
+  requests: Record<string, unknown>[];
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const response = await fetch(
+    `https://docs.googleapis.com/v1/documents/${encodeURIComponent(
+      input.documentId,
+    )}:batchUpdate`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ requests: input.requests }),
+    },
+  );
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    const message = await apiErrorMessage("Google Docs batchUpdate", response, payload);
+    throw new Error(message);
+  }
+
+  return {
+    documentId: input.documentId,
+    replies: (payload as { replies?: unknown[] } | null)?.replies ?? [],
+    requestCount: input.requests.length,
+  };
+}
+
+export async function replaceGoogleDocText(input: {
+  workspaceId: string;
+  documentId: string;
+  replacements: Array<{ find: string; replace: string }>;
+}) {
+  return batchUpdateGoogleDoc({
+    workspaceId: input.workspaceId,
+    documentId: input.documentId,
+    requests: input.replacements.map((replacement) => ({
+      replaceAllText: {
+        containsText: {
+          text: replacement.find,
+          matchCase: true,
+        },
+        replaceText: replacement.replace,
+      },
+    })),
+  });
 }
 
 export async function readGoogleSheetRange(input: {

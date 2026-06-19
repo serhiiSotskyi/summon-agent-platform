@@ -1,12 +1,16 @@
 import { Prisma, type Agent, type AgentFile } from "@prisma/client";
 import {
+  batchUpdateGoogleDoc,
   batchUpdateGoogleSlides,
   copyGoogleDriveFile,
+  createGoogleDoc,
   createGoogleDriveTextFile,
   createNotionPage,
   inspectGoogleSlidesTemplate,
+  readGoogleDocText,
   readGoogleSlidesText,
   readGoogleSheetRange,
+  replaceGoogleDocText,
   replaceGoogleSlidesText,
   updateGoogleSlidesTableCell,
   updateGoogleSlidesTextElement,
@@ -207,6 +211,13 @@ function compactToolInputForPrompt(toolName: string, value: unknown) {
     };
   }
 
+  if (toolName === "google.docs.batchUpdate") {
+    return {
+      documentId: input.documentId,
+      requestCount: asObjectArray(input.requests).length,
+    };
+  }
+
   if (toolName === "google.slides.auditDeck") {
     return {
       presentationId: input.presentationId,
@@ -221,7 +232,15 @@ function compactToolInputForPrompt(toolName: string, value: unknown) {
     return { presentationId: input.presentationId };
   }
 
-  if (toolName === "notion.createPage" || toolName === "google.drive.createTextFile") {
+  if (toolName === "google.docs.readText") {
+    return { documentId: input.documentId };
+  }
+
+  if (
+    toolName === "notion.createPage" ||
+    toolName === "google.drive.createTextFile" ||
+    toolName === "google.docs.createDocument"
+  ) {
     return {
       title: input.title,
       name: input.name,
@@ -272,6 +291,27 @@ function compactToolResultForPrompt(value: unknown) {
       result: {
         presentationId: result.presentationId,
         replacementResults: result.replacementResults,
+      },
+    };
+  }
+
+  if (toolName === "google.docs.replaceText") {
+    return {
+      ...base,
+      result: {
+        documentId: result.documentId,
+        replacementResults: result.replacementResults,
+      },
+    };
+  }
+
+  if (toolName === "google.docs.readText") {
+    return {
+      ...base,
+      result: {
+        documentId: result.documentId,
+        title: result.title,
+        preview: compactText(result.preview, 2400),
       },
     };
   }
@@ -366,12 +406,14 @@ function compactToolResultForPrompt(value: unknown) {
   if (
     toolName === "google.slides.copyTemplate" ||
     toolName === "google.drive.copyFile" ||
-    toolName === "google.drive.createTextFile"
+    toolName === "google.drive.createTextFile" ||
+    toolName === "google.docs.createDocument"
   ) {
     return {
       ...base,
       result: {
         fileId: result.fileId,
+        documentId: result.documentId,
         presentationId: result.presentationId,
         fileName: result.fileName,
         webViewLink: result.webViewLink,
@@ -1488,6 +1530,8 @@ function buildDeterministicFinalResult(input: {
           label:
             result.toolName === "google.slides.copyTemplate"
               ? "Generated Google Slides deck"
+              : result.toolName === "google.docs.createDocument"
+                ? "Generated Google Doc"
               : result.toolName === "google.drive.createTextFile"
                 ? "Generated Drive summary"
                 : result.toolName === "notion.createPage"
@@ -1600,6 +1644,25 @@ function schemaForTool(tool: GenericAgentToolKey) {
         content: "text content",
         mimeType: "text/plain, text/csv, application/json, or text/markdown",
       };
+    case "google.docs.createDocument":
+      return {
+        title: "new Google Doc title",
+      };
+    case "google.docs.readText":
+      return {
+        documentUrl: "Google Docs URL, optional alternative to documentId",
+        documentId: "Google Docs document id",
+      };
+    case "google.docs.replaceText":
+      return {
+        documentId: "Doc id created/copied earlier in this run",
+        replacements: "[{find, replace}] placeholder replacements",
+      };
+    case "google.docs.batchUpdate":
+      return {
+        documentId: "Doc id created/copied earlier in this run",
+        requests: "Google Docs API batchUpdate requests",
+      };
     case "google.sheets.readRange":
       return {
         spreadsheetUrl: "Google Sheets URL, optional alternative to spreadsheetId",
@@ -1699,6 +1762,7 @@ function buildPlannerPrompt(input: {
     "Allowed without approval: reading data, running helper code in the sandbox, creating new files, copying templates, editing files created/copied in this same run, and creating Notion memory pages.",
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
+    "For Google Docs template work, first copy or create the document, then replace placeholders or batch update only the copied/run-owned Doc.",
     "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
     "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
     "Do not treat a visual template as trusted content. Replace stale source-market labels, copied commentary, and old KPI claims, or explicitly mark the slide as a human-editable placeholder.",
@@ -2044,6 +2108,90 @@ async function executeOneTool(input: {
       );
       artifacts.push(artifact);
       result = created;
+    }
+
+    if (toolName === "google.docs.createDocument") {
+      const created = await createGoogleDoc({
+        workspaceId: input.workspaceId,
+        title: asString(request.title, `${input.agent.name} generated doc`),
+      });
+      input.state.createdGoogleFileIds.add(created.fileId);
+      input.state.createdGoogleFiles.push(created);
+      const artifact = artifactOutput(
+        await createArtifact({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          artifactType: "google_doc",
+          name: created.fileName,
+          location: created.webViewLink,
+          mimeType: created.mimeType,
+          payload: created,
+        }),
+      );
+      artifacts.push(artifact);
+      result = created;
+    }
+
+    if (toolName === "google.docs.readText") {
+      const attached = firstAttachedGoogleFile(input.agent, {
+        urlPattern: /docs\.google\.com\/document/,
+      });
+      const documentId = parseGoogleFileId(
+        asString(request.documentId) ||
+          asString(request.documentUrl) ||
+          attached?.url ||
+          "",
+      );
+      if (!documentId) {
+        throw new Error("google.docs.readText requires documentId, documentUrl, or an attached Google Docs URL.");
+      }
+      result = await readGoogleDocText({
+        workspaceId: input.workspaceId,
+        documentId,
+      });
+    }
+
+    if (toolName === "google.docs.replaceText") {
+      const documentId = parseGoogleFileId(asString(request.documentId));
+      requireCreatedGoogleFile(input.state, documentId, toolName);
+      const replacements = asObjectArray(request.replacements)
+        .map((replacement) => ({
+          find: asString(replacement.find),
+          replace: asString(replacement.replace),
+        }))
+        .filter((replacement) => replacement.find);
+      const replaceResult = await replaceGoogleDocText({
+        workspaceId: input.workspaceId,
+        documentId,
+        replacements,
+      });
+      const replies = asObjectArray(asRecord(replaceResult).replies);
+      result = {
+        ...asRecord(replaceResult),
+        replacementResults: replacements.map((replacement, index) => {
+          const reply = asRecord(replies[index]);
+          const replaceAllText = asRecord(reply.replaceAllText);
+          const occurrencesChanged =
+            typeof replaceAllText.occurrencesChanged === "number"
+              ? replaceAllText.occurrencesChanged
+              : 0;
+
+          return {
+            ...replacement,
+            occurrencesChanged,
+          };
+        }),
+      };
+    }
+
+    if (toolName === "google.docs.batchUpdate") {
+      const documentId = parseGoogleFileId(asString(request.documentId));
+      requireCreatedGoogleFile(input.state, documentId, toolName);
+      result = await batchUpdateGoogleDoc({
+        workspaceId: input.workspaceId,
+        documentId,
+        requests: asObjectArray(request.requests),
+      });
     }
 
     if (toolName === "google.sheets.readRange") {

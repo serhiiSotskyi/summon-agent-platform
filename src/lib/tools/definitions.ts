@@ -21,6 +21,34 @@ export const GENERIC_AGENT_TOOLS = [
     category: "Google Drive",
   },
   {
+    key: "google.docs.createDocument",
+    name: "Create Google Doc",
+    summary:
+      "Create a new native Google Doc as a run-owned editable output.",
+    category: "Google Docs",
+  },
+  {
+    key: "google.docs.readText",
+    name: "Read Google Doc text",
+    summary:
+      "Read document text, paragraphs, and basic tables from a Google Doc.",
+    category: "Google Docs",
+  },
+  {
+    key: "google.docs.replaceText",
+    name: "Replace text in generated Google Doc",
+    summary:
+      "Replace placeholder text in a Google Doc created or copied by the current run.",
+    category: "Google Docs",
+  },
+  {
+    key: "google.docs.batchUpdate",
+    name: "Docs batch update",
+    summary:
+      "Run raw Google Docs batchUpdate requests against a Doc created or copied by the current run.",
+    category: "Google Docs",
+  },
+  {
     key: "google.sheets.readRange",
     name: "Read Google Sheet range",
     summary: "Read values from a Google Sheets range.",

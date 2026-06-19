@@ -12,7 +12,9 @@ import { canRunAgent } from "@/lib/app/permissions";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { collectReadOnlyConnectorContext } from "@/lib/connectors/read-only";
 import {
+  batchUpdateGoogleDoc,
   batchUpdateGoogleSlides,
+  replaceGoogleDocText,
   replaceGoogleSlidesText,
   updateGoogleSheetRange,
   updateGoogleSlidesTableCell,
@@ -796,6 +798,23 @@ async function executeApprovedTool(input: {
       return batchUpdateGoogleSlides({
         workspaceId: input.workspaceId,
         presentationId: asString(input.parameters.presentationId),
+        requests: asObjectArray(input.parameters.requests),
+      }) as Promise<Prisma.InputJsonObject>;
+    case "google.docs.replaceText":
+      return replaceGoogleDocText({
+        workspaceId: input.workspaceId,
+        documentId: asString(input.parameters.documentId),
+        replacements: asObjectArray(input.parameters.replacements)
+          .map((replacement) => ({
+            find: asString(replacement.find),
+            replace: asString(replacement.replace),
+          }))
+          .filter((replacement) => replacement.find),
+      }) as Promise<Prisma.InputJsonObject>;
+    case "google.docs.batchUpdate":
+      return batchUpdateGoogleDoc({
+        workspaceId: input.workspaceId,
+        documentId: asString(input.parameters.documentId),
         requests: asObjectArray(input.parameters.requests),
       }) as Promise<Prisma.InputJsonObject>;
     default:
