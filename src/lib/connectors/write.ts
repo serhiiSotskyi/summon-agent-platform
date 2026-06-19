@@ -113,6 +113,7 @@ type GoogleSlidesTextElement = {
 
 const GOOGLE_SLIDES_MIME = "application/vnd.google-apps.presentation";
 const GOOGLE_DOCS_MIME = "application/vnd.google-apps.document";
+const GOOGLE_SHEETS_MIME = "application/vnd.google-apps.spreadsheet";
 const GOOGLE_PPTX_MIME =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const GOOGLE_SCOPE_WARNING =
@@ -310,6 +311,25 @@ function textToGoogleDocHtml(input: { title?: string; text: string }) {
     "</body>",
     "</html>",
   ].join("\n");
+}
+
+function csvCell(value: unknown) {
+  const text =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "string"
+        ? value
+        : String(value);
+
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  return text;
+}
+
+function rowsToCsv(rows: unknown[][]) {
+  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
 }
 
 async function getWorkspaceConnectorCredential(
@@ -1494,6 +1514,137 @@ export async function readGoogleSheetRange(input: {
   }
 
   return payload;
+}
+
+async function createGoogleSheetViaDriveUpload(input: {
+  accessToken: string;
+  title: string;
+  rows: unknown[][];
+}) {
+  const csv = rowsToCsv(input.rows.length > 0 ? input.rows : [[""]]);
+  const metadata = {
+    name: input.title,
+    mimeType: GOOGLE_SHEETS_MIME,
+  };
+  const { boundary, body } = toMultipartBody([
+    {
+      headers: [
+        'Content-Disposition: form-data; name="metadata"',
+        "Content-Type: application/json; charset=UTF-8",
+      ].join("\r\n"),
+      body: JSON.stringify(metadata),
+    },
+    {
+      headers: [
+        `Content-Disposition: form-data; name="file"; filename="${input.title.replace(/"/g, "")}.csv"`,
+        "Content-Type: text/csv; charset=UTF-8",
+      ].join("\r\n"),
+      body: csv,
+    },
+  ]);
+
+  const response = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const payload = (await readJson(response)) as
+    | { id?: string; name?: string; mimeType?: string; webViewLink?: string }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage("Google Sheets Drive upload", response, payload);
+    throw new Error(message);
+  }
+
+  return {
+    spreadsheetId: payload.id,
+    fileId: payload.id,
+    fileName: payload.name ?? input.title,
+    mimeType: payload.mimeType ?? GOOGLE_SHEETS_MIME,
+    webViewLink: payload.webViewLink ?? null,
+    mode: "drive_csv_conversion_fallback",
+  };
+}
+
+export async function createGoogleSheet(input: {
+  workspaceId: string;
+  title: string;
+  sheetTitle?: string;
+  rows?: unknown[][];
+  range?: string;
+}) {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const title = input.title.trim() || "Generated spreadsheet";
+  const sheetTitle = input.sheetTitle?.trim() || "Sheet1";
+  const rows = Array.isArray(input.rows) ? input.rows : [];
+
+  try {
+    const response = await fetch("https://sheets.googleapis.com/v4/spreadsheets", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        properties: { title },
+        sheets: [{ properties: { title: sheetTitle } }],
+      }),
+    });
+    const payload = (await readJson(response)) as
+      | {
+          spreadsheetId?: string;
+          spreadsheetUrl?: string;
+          properties?: { title?: string };
+        }
+      | null;
+
+    if (!response.ok || !payload?.spreadsheetId) {
+      const message = await apiErrorMessage("Google Sheets create", response, payload);
+      throw new Error(message);
+    }
+
+    if (rows.length > 0) {
+      await updateGoogleSheetRange({
+        workspaceId: input.workspaceId,
+        spreadsheetId: payload.spreadsheetId,
+        range: input.range?.trim() || `${sheetTitle}!A1`,
+        values: rows,
+      });
+    }
+
+    const metadata = await getGoogleDriveMetadata({
+      accessToken,
+      fileId: payload.spreadsheetId,
+      provider: "Google Sheets metadata",
+    });
+
+    return {
+      spreadsheetId: payload.spreadsheetId,
+      spreadsheetUrl: payload.spreadsheetUrl ?? metadata.webViewLink,
+      ...metadata,
+      fileName: metadata.fileName ?? payload.properties?.title ?? title,
+      mimeType: metadata.mimeType ?? GOOGLE_SHEETS_MIME,
+      seededRows: rows.length,
+      mode: "sheets_api",
+    };
+  } catch (error) {
+    if (rows.length > 0 && isGoogleApiDisabledError(error)) {
+      return createGoogleSheetViaDriveUpload({
+        accessToken,
+        title,
+        rows,
+      });
+    }
+
+    throw error;
+  }
 }
 
 export async function updateGoogleSheetRange(input: {

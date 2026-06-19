@@ -55,6 +55,13 @@ export const GENERIC_AGENT_TOOLS = [
     category: "Google Sheets",
   },
   {
+    key: "google.sheets.createSpreadsheet",
+    name: "Create Google Sheet",
+    summary:
+      "Create a new native Google Sheet as a run-owned editable output, optionally seeded with rows.",
+    category: "Google Sheets",
+  },
+  {
     key: "google.sheets.updateRange",
     name: "Update generated Google Sheet",
     summary:

@@ -5,6 +5,7 @@ import {
   copyGoogleDriveFile,
   createGoogleDoc,
   createGoogleDriveTextFile,
+  createGoogleSheet,
   createNotionPage,
   inspectGoogleSlidesTemplate,
   readGoogleDocText,
@@ -240,13 +241,21 @@ function compactToolInputForPrompt(toolName: string, value: unknown) {
   if (
     toolName === "notion.createPage" ||
     toolName === "google.drive.createTextFile" ||
-    toolName === "google.docs.createDocument"
+    toolName === "google.docs.createDocument" ||
+    toolName === "google.sheets.createSpreadsheet"
   ) {
     return {
       title: input.title,
+      sheetTitle: input.sheetTitle,
       name: input.name,
       mimeType: input.mimeType,
       content: compactText(input.content, 1600),
+      rows: Array.isArray(input.rows)
+        ? {
+            rowCount: input.rows.length,
+            firstRows: input.rows.slice(0, 3),
+          }
+        : undefined,
       links: input.links,
     };
   }
@@ -1773,6 +1782,13 @@ function schemaForTool(tool: GenericAgentToolKey) {
         spreadsheetId: "Google Sheets id",
         range: "A1 range, e.g. Sheet1!A1:D20",
       };
+    case "google.sheets.createSpreadsheet":
+      return {
+        title: "new Google Sheet title",
+        sheetTitle: "optional first tab name",
+        range: "optional starting A1 range when seeding rows, e.g. Sheet1!A1",
+        rows: "optional 2D array of rows/cells to seed into the new Sheet",
+      };
     case "google.sheets.updateRange":
       return {
         spreadsheetId: "Sheet id created/copied earlier in this run",
@@ -1867,6 +1883,7 @@ function buildPlannerPrompt(input: {
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
     "For Google Docs template work, first copy or create the document, then replace placeholders or batch update only the copied/run-owned Doc.",
+    "For spreadsheet/table outputs, use google.sheets.createSpreadsheet to create a run-owned native Google Sheet, seed rows when available, then use google.sheets.updateRange/readRange for follow-up edits and verification.",
     "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
     "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
     "Do not treat a visual template as trusted content. Replace stale source-market labels, copied commentary, and old KPI claims, or explicitly mark the slide as a human-editable placeholder.",
@@ -2318,6 +2335,32 @@ async function executeOneTool(input: {
         spreadsheetId,
         range,
       });
+    }
+
+    if (toolName === "google.sheets.createSpreadsheet") {
+      const rows = Array.isArray(request.rows) ? (request.rows as unknown[][]) : [];
+      const created = await createGoogleSheet({
+        workspaceId: input.workspaceId,
+        title: asString(request.title, `${input.agent.name} generated sheet`),
+        sheetTitle: asString(request.sheetTitle, "Sheet1"),
+        range: asString(request.range, "Sheet1!A1"),
+        rows,
+      });
+      input.state.createdGoogleFileIds.add(created.fileId);
+      input.state.createdGoogleFiles.push(created);
+      const artifact = artifactOutput(
+        await createArtifact({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          artifactType: "google_sheet",
+          name: created.fileName,
+          location: created.webViewLink,
+          mimeType: created.mimeType,
+          payload: created,
+        }),
+      );
+      artifacts.push(artifact);
+      result = created;
     }
 
     if (toolName === "google.sheets.updateRange") {
@@ -2811,6 +2854,7 @@ export function genericToolInstruction() {
     `Supported generic tools: ${GENERIC_AGENT_TOOLS.map((tool) => tool.key).join(", ")}.`,
     "Use tools for real work instead of pretending they ran.",
     "When a task asks for generated artifacts such as decks, reports, files, or memory pages, do not stop after reading context; create or update the requested run-owned outputs.",
+    "For spreadsheet/table outputs, create a native run-owned Google Sheet when the tool is selected, then read back or update important ranges as needed.",
     "Create/copy/write only run-owned outputs unless approval is explicitly granted.",
   ].join("\n");
 }
