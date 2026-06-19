@@ -400,6 +400,7 @@ function compactToolResultForPrompt(value: unknown) {
         score: result.score,
         staleReferences: asObjectArray(result.staleReferences).slice(0, 20),
         missingExpectedValues: asStringArray(result.missingExpectedValues).slice(0, 20),
+        blockingSlideIssues: asObjectArray(result.blockingSlideIssues).slice(0, 20),
         slideStatuses: asObjectArray(result.slideStatuses)
           .slice(0, 30)
           .map((slide) => ({
@@ -837,18 +838,393 @@ function formatReportDecimalCurrency(value: unknown, currency: string) {
   return Number.isFinite(number) ? `${currencyPrefix(currency)}${number.toFixed(2)}` : "";
 }
 
-function genericReportMetricValues(reportData: Record<string, unknown>, compactCost = false) {
+function numericMetric(value: unknown) {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function firstNumericMetric(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = numericMetric(record[key]);
+    if (typeof value === "number") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function roundedDecimal(value: number, places: number) {
+  return value.toLocaleString("en-GB", {
+    maximumFractionDigits: places,
+    minimumFractionDigits: places,
+  });
+}
+
+function metricValueVariants(input: {
+  value: unknown;
+  kind: "integer" | "currency" | "decimalCurrency" | "percent" | "decimal";
+  currency: string;
+  compactCurrency?: boolean;
+}) {
+  const number = numericMetric(input.value);
+  if (typeof number !== "number") {
+    return [];
+  }
+
+  const variants = new Set<string>();
+  if (input.kind === "integer") {
+    variants.add(Math.round(number).toLocaleString("en-GB"));
+    variants.add(roundedDecimal(number, 1));
+    variants.add(roundedDecimal(number, 2));
+  }
+  if (input.kind === "currency") {
+    variants.add(formatReportCurrency(number, input.currency, Boolean(input.compactCurrency)));
+    variants.add(formatReportCurrency(number, input.currency, false));
+    variants.add(formatReportDecimalCurrency(number, input.currency));
+    variants.add(`${currencyPrefix(input.currency)}${roundedDecimal(number, 1)}`);
+  }
+  if (input.kind === "decimalCurrency") {
+    variants.add(formatReportDecimalCurrency(number, input.currency));
+    variants.add(formatReportCurrency(number, input.currency, false));
+  }
+  if (input.kind === "percent") {
+    variants.add(formatPercentMetric(number));
+    variants.add(`${(number * 100).toFixed(1)}%`);
+    variants.add(`${Math.round(number * 100)}%`);
+  }
+  if (input.kind === "decimal") {
+    variants.add(roundedDecimal(number, 2));
+    variants.add(roundedDecimal(number, 1));
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
+
+function reportMetricGroupsForRecord(
+  record: Record<string, unknown>,
+  reportData: Record<string, unknown>,
+  compactCost = false,
+) {
   const metadata = reportMetadataFromArtifact(reportData);
   const currency = metadata.currency || "GBP";
+  const metricInputs: Array<{
+    key: string;
+    value: number | undefined;
+    kind: "integer" | "currency" | "decimalCurrency" | "percent" | "decimal";
+    replacement: string;
+  }> = [
+    {
+      key: "leads",
+      value: firstNumericMetric(record, ["sales_leads", "leads", "conversions"]),
+      kind: "integer",
+      replacement: formatIntegerMetric(record.sales_leads ?? record.leads ?? record.conversions),
+    },
+    {
+      key: "cost",
+      value: firstNumericMetric(record, ["cost", "spend"]),
+      kind: "currency",
+      replacement: formatReportCurrency(record.cost ?? record.spend, currency, compactCost),
+    },
+    {
+      key: "cpl",
+      value: firstNumericMetric(record, ["cpl", "cost_per_lead"]),
+      kind: "decimalCurrency",
+      replacement: formatReportDecimalCurrency(record.cpl ?? record.cost_per_lead, currency),
+    },
+    {
+      key: "cvr",
+      value: firstNumericMetric(record, ["cvr", "conversion_rate"]),
+      kind: "percent",
+      replacement: formatPercentMetric(record.cvr ?? record.conversion_rate),
+    },
+    {
+      key: "clicks",
+      value: firstNumericMetric(record, ["clicks"]),
+      kind: "integer",
+      replacement: formatIntegerMetric(record.clicks),
+    },
+    {
+      key: "ctr",
+      value: firstNumericMetric(record, ["ctr", "click_through_rate"]),
+      kind: "percent",
+      replacement: formatPercentMetric(record.ctr ?? record.click_through_rate),
+    },
+    {
+      key: "impressions",
+      value: firstNumericMetric(record, ["impressions"]),
+      kind: "integer",
+      replacement: formatIntegerMetric(record.impressions),
+    },
+    {
+      key: "cpc",
+      value: firstNumericMetric(record, ["cpc", "cost_per_click"]),
+      kind: "decimalCurrency",
+      replacement: formatReportDecimalCurrency(record.cpc ?? record.cost_per_click, currency),
+    },
+  ];
+
+  return metricInputs
+    .filter((metric): metric is typeof metric & { value: number } =>
+      typeof metric.value === "number" && Boolean(metric.replacement),
+    )
+    .map((metric) => ({
+      key: metric.key,
+      value: metric.value,
+      replacement: metric.replacement,
+      variants: metricValueVariants({
+        value: metric.value,
+        kind: metric.kind,
+        currency,
+        compactCurrency: compactCost,
+      }),
+    }));
+}
+
+function genericReportMetricValues(reportData: Record<string, unknown>, compactCost = false) {
   const overall = reportOverallKpis(reportData);
+  return reportMetricGroupsForRecord(overall, reportData, compactCost)
+    .filter((group) => ["leads", "cost", "cpl", "cvr", "clicks", "ctr"].includes(group.key))
+    .map((group) => group.replacement)
+    .filter(Boolean);
+}
+
+function normalizedReportLabel(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function reportSegmentArrays(reportData: Record<string, unknown>) {
   return [
-    formatIntegerMetric(overall.sales_leads ?? overall.leads),
-    formatReportCurrency(overall.cost ?? overall.spend, currency, compactCost),
-    formatReportDecimalCurrency(overall.cpl, currency),
-    formatPercentMetric(overall.cvr),
-    formatIntegerMetric(overall.clicks),
-    formatPercentMetric(overall.ctr),
-  ].filter(Boolean);
+    {
+      category: "campaign",
+      candidates: [
+        reportData.campaign_type_breakdowns,
+        reportData.campaign_type_breakdown,
+        reportData.campaign_breakdowns,
+        reportData.campaign_breakdown,
+        reportData.campaigns,
+      ],
+      labelKeys: ["campaign_type", "campaignType", "campaign", "type", "name", "label"],
+    },
+    {
+      category: "destination",
+      candidates: [
+        reportData.destination_breakdowns,
+        reportData.destination_breakdown,
+        reportData.destinations,
+        reportData.destination,
+        reportData.segment_breakdowns,
+        reportData.segment_breakdown,
+      ],
+      labelKeys: ["destination", "segment", "market", "name", "label"],
+    },
+  ] as const;
+}
+
+function reportSegments(reportData: Record<string, unknown>) {
+  const segments: Array<{
+    category: "campaign" | "destination";
+    label: string;
+    metrics: Record<string, unknown>;
+    aliases: string[];
+  }> = [];
+
+  for (const group of reportSegmentArrays(reportData)) {
+    for (const candidate of group.candidates) {
+      const rows: Record<string, unknown>[] = Array.isArray(candidate)
+        ? asObjectArray(candidate)
+        : Object.entries(asRecord(candidate)).map(([label, metrics]) => ({
+            label,
+            ...asRecord(metrics),
+          }));
+
+      for (const row of rows) {
+        const label =
+          group.labelKeys.map((key) => asString(row[key])).find(Boolean) ||
+          asString(row.label);
+        if (!label) {
+          continue;
+        }
+        const normalized = normalizedReportLabel(label);
+        const aliases = new Set([normalized]);
+        if (normalized === "performance max") {
+          aliases.add("pmax");
+          aliases.add("performance");
+        }
+        if (normalized === "demand gen") {
+          aliases.add("demand generation");
+        }
+        if (normalized === "se asia") {
+          aliases.add("south east asia");
+          aliases.add("southeast asia");
+        }
+        if (normalized === "other" && group.category === "destination") {
+          aliases.add("other destination");
+        }
+
+        segments.push({
+          category: group.category,
+          label,
+          metrics: row,
+          aliases: Array.from(aliases),
+        });
+      }
+    }
+  }
+
+  return segments;
+}
+
+function slideLooksLikePlaceholder(text: string) {
+  return /\bplaceholder|to be confirmed|human review|not provided|missing|supporting data was not provided|attach the relevant export|needs review\b/i.test(
+    text,
+  );
+}
+
+function slideSegmentForReportData(
+  reportData: Record<string, unknown>,
+  slideText: string,
+  slideTitle: string,
+) {
+  const title = normalizedReportLabel(slideTitle);
+  const headingText = normalizedReportLabel(
+    [slideTitle, slideText.split(/\n/).slice(0, 5).join(" ")].join(" "),
+  );
+  if (!headingText) {
+    return null;
+  }
+
+  const segmentCandidates = reportSegments(reportData).filter((segment) =>
+    segment.aliases.some((alias) => {
+      if (!alias) {
+        return false;
+      }
+      if (segment.category === "destination" && alias === "other") {
+        return /\bother destination\b/.test(headingText);
+      }
+      if (segment.category === "campaign" && alias === "generic") {
+        return /\bgeneric\b/.test(title) || /\bgeneric (summary|trend|campaign)\b/.test(headingText);
+      }
+      if (segment.category === "campaign" && alias === "performance") {
+        return /\bperformance max\b/.test(headingText);
+      }
+      return new RegExp(`(^| )${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`).test(
+        headingText,
+      );
+    }),
+  );
+
+  return segmentCandidates.sort((a, b) => b.label.length - a.label.length).at(0) ?? null;
+}
+
+function reportMetricValuesForSlide(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+  slideTitle: string;
+  compactCost?: boolean;
+}) {
+  const segment = slideSegmentForReportData(input.reportData, input.slideText, input.slideTitle);
+  if (!segment) {
+    return genericReportMetricValues(input.reportData, Boolean(input.compactCost));
+  }
+
+  return reportMetricGroupsForRecord(
+    segment.metrics,
+    input.reportData,
+    Boolean(input.compactCost),
+  )
+    .filter((group) => ["leads", "cost", "cpl", "cvr", "clicks", "ctr"].includes(group.key))
+    .map((group) => group.replacement)
+    .filter(Boolean);
+}
+
+function hasUnsupportedComparatorData(reportData: Record<string, unknown>) {
+  const missing = reportMissingSections(reportData).join(" ").toLowerCase();
+  if (/\byoy|prior[- ]?year|year[- ]on[- ]year|comparator|comparison|trend\b/.test(missing)) {
+    return true;
+  }
+  return (
+    Object.keys(asRecord(reportData.yoy)).length === 0 &&
+    Object.keys(asRecord(reportData.year_over_year)).length === 0 &&
+    Object.keys(asRecord(reportData.comparators)).length === 0
+  );
+}
+
+function unsupportedComparatorClaim(text: string) {
+  return /\byoy\b\s*:?\s*[+-]?\d|\byear[- ]on[- ]year\b|\bvs\.?\s+(?:last|prior)\s+year\b|\blast year\b|\bprior year\b|\bmarket conditions\b/i.test(
+    text,
+  );
+}
+
+function malformedPlaceholderText(text: string) {
+  return /\bQ[1-4]\s+2[—-]\d{2}\b/.test(text);
+}
+
+function containsAnyVariant(text: string, variants: string[]) {
+  return variants.some((variant) => variant && text.includes(variant));
+}
+
+function metricValuesDiffer(a: number, b: number) {
+  const scale = Math.max(Math.abs(a), Math.abs(b), 1);
+  return Math.abs(a - b) / scale > 0.02;
+}
+
+function segmentMetricIssues(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+  slideTitle: string;
+}) {
+  if (slideLooksLikePlaceholder(input.slideText)) {
+    return [];
+  }
+
+  const segment = slideSegmentForReportData(input.reportData, input.slideText, input.slideTitle);
+  if (!segment) {
+    return [];
+  }
+
+  const overallGroups = reportMetricGroupsForRecord(
+    reportOverallKpis(input.reportData),
+    input.reportData,
+    true,
+  );
+  const segmentGroups = reportMetricGroupsForRecord(segment.metrics, input.reportData, true);
+  const segmentMatches = segmentGroups.filter((group) =>
+    containsAnyVariant(input.slideText, group.variants),
+  );
+  const overallLeaks = overallGroups.filter((overall) => {
+    const segmentPeer = segmentGroups.find((group) => group.key === overall.key);
+    return (
+      segmentPeer &&
+      metricValuesDiffer(overall.value, segmentPeer.value) &&
+      containsAnyVariant(input.slideText, overall.variants) &&
+      !containsAnyVariant(input.slideText, segmentPeer.variants)
+    );
+  });
+
+  const issues: string[] = [];
+  if (overallLeaks.length >= 2 && segmentMatches.length < 3) {
+    issues.push(
+      `${segment.category} segment "${segment.label}" appears to use overall report metrics instead of segment metrics (${overallLeaks
+        .map((group) => group.key)
+        .join(", ")}).`,
+    );
+  }
+
+  const mustHave = segmentGroups.filter((group) =>
+    ["leads", "cost", "cpl"].includes(group.key),
+  );
+  const missingCore = mustHave.filter(
+    (group) => !containsAnyVariant(input.slideText, group.variants),
+  );
+  if (missingCore.length >= 2 && !slideLooksLikePlaceholder(input.slideText)) {
+    issues.push(
+      `${segment.category} segment "${segment.label}" is missing core segment values (${missingCore
+        .map((group) => group.key)
+        .join(", ")}).`,
+    );
+  }
+
+  return issues;
 }
 
 function latestDeckMap(results: unknown[]) {
@@ -926,24 +1302,57 @@ function isLikelyMetricText(value: string) {
 }
 
 function reportDeckCommentary(reportData: Record<string, unknown>) {
-  const metadata = reportMetadataFromArtifact(reportData);
   const overall = reportOverallKpis(reportData);
+  return reportDeckCommentaryForRecord({
+    reportData,
+    record: overall,
+    label: "",
+  });
+}
+
+function reportDeckCommentaryForRecord(input: {
+  reportData: Record<string, unknown>;
+  record: Record<string, unknown>;
+  label?: string;
+}) {
+  const metadata = reportMetadataFromArtifact(input.reportData);
+  const record = input.record;
   const currency = metadata.currency || "GBP";
   const client = metadata.client || "the client";
   const market = metadata.market ? `${metadata.market} ` : "";
   const period = metadata.period ? ` for ${metadata.period}` : "";
-  const leads = formatIntegerMetric(overall.sales_leads ?? overall.leads) || "unverified";
-  const spend = formatReportCurrency(overall.cost ?? overall.spend, currency) || "unverified";
-  const cpl = formatReportDecimalCurrency(overall.cpl, currency) || "unverified";
-  const cvr = formatPercentMetric(overall.cvr) || "unverified";
-  const clicks = formatIntegerMetric(overall.clicks) || "unverified";
-  const ctr = formatPercentMetric(overall.ctr) || "unverified";
+  const label = input.label ? `${input.label} ` : "";
+  const leads = formatIntegerMetric(record.sales_leads ?? record.leads) || "unverified";
+  const spend = formatReportCurrency(record.cost ?? record.spend, currency) || "unverified";
+  const cpl = formatReportDecimalCurrency(record.cpl, currency) || "unverified";
+  const cvr = formatPercentMetric(record.cvr) || "unverified";
+  const clicks = formatIntegerMetric(record.clicks) || "unverified";
+  const ctr = formatPercentMetric(record.ctr) || "unverified";
 
   return [
-    `${client} ${market}performance${period} was rebuilt from the uploaded report data, not copied from the visual template.`,
+    `${client} ${market}${label}performance${period} was rebuilt from the uploaded report data, not copied from the visual template.`,
     `The data shows ${leads} leads from ${spend} spend, with ${clicks} clicks, ${ctr} CTR, ${cpl} CPL, and ${cvr} CVR.`,
-    "Slides with missing comparator, planning, auction, or update data should remain as human-editable placeholders until supporting evidence is attached.",
+    hasUnsupportedComparatorData(input.reportData)
+      ? "Comparator, prior-year, or YoY claims were not supported by the uploaded data and should stay out of this slide until supporting evidence is attached."
+      : "Slides with missing planning, auction, or update data should remain as human-editable placeholders until supporting evidence is attached.",
   ].join("\n");
+}
+
+function reportDeckCommentaryForSlide(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+  slideTitle: string;
+}) {
+  const segment = slideSegmentForReportData(input.reportData, input.slideText, input.slideTitle);
+  if (!segment) {
+    return reportDeckCommentary(input.reportData);
+  }
+
+  return reportDeckCommentaryForRecord({
+    reportData: input.reportData,
+    record: segment.metrics,
+    label: segment.label,
+  });
 }
 
 function reportMissingSections(reportData: Record<string, unknown>) {
@@ -1046,8 +1455,6 @@ function genericReportDeckBatchRequests(results: unknown[]) {
   const client = metadata.client || "";
   const market = metadata.market || "";
   const targetLabel = [client, market].filter(Boolean).join(" ").trim();
-  const values = genericReportMetricValues(reportData, true);
-  const commentary = reportDeckCommentary(reportData);
   const staleTerms = staleTermsForTarget({
     targetMarket: market,
     targetClient: client,
@@ -1069,8 +1476,23 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     const containsExpectedValue = expectedReportValues(reportData).some((value) =>
       slideText.includes(value),
     );
+    const containsUnsupportedComparator =
+      hasUnsupportedComparatorData(reportData) && unsupportedComparatorClaim(slideText);
+    const values = reportMetricValuesForSlide({
+      reportData,
+      slideText,
+      slideTitle,
+      compactCost: true,
+    });
+    const commentary = reportDeckCommentaryForSlide({
+      reportData,
+      slideText,
+      slideTitle,
+    });
+
     if (
       shouldPlaceholderReportSlide(reportData, slideText) ||
+      malformedPlaceholderText(slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
       const placeholderText = placeholderTextForSlide(reportData, slideText);
@@ -1105,6 +1527,21 @@ function genericReportDeckBatchRequests(results: unknown[]) {
         );
       }
       continue;
+    }
+
+    if (containsUnsupportedComparator) {
+      textElements
+        .map((element) => asString(element.text))
+        .filter((text) => unsupportedComparatorClaim(text))
+        .forEach((text) => {
+          pushGenericSlideReplacement(
+            updateRequests,
+            seen,
+            slideObjectId,
+            text,
+            "Comparator data was not provided for this run.",
+          );
+        });
     }
 
     for (const term of nonCurrencyStaleTerms) {
@@ -1142,7 +1579,12 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       .map((element) => asString(element.text))
       .filter((text) => text.length > 140)
       .at(-1);
-    if (longText && /\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longText)) {
+    if (
+      longText &&
+      (/\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longText) ||
+        containsUnsupportedComparator ||
+        slideSegmentForReportData(reportData, slideText, slideTitle))
+    ) {
       pushGenericSlideReplacement(updateRequests, seen, slideObjectId, longText, commentary);
     }
 
@@ -1226,15 +1668,40 @@ async function auditGoogleSlidesDeck(input: {
     const text = asObjectArray(slide.textElements)
       .map((element) => asString(element.text))
       .join("\n");
+    const title = asString(slide.titleCandidate);
     const reasons: string[] = [];
     if (staleTerms.some((term) => staleTermMatches(text, term))) {
       reasons.push("Contains stale source-market or source-template text.");
     }
-    if (/\bplaceholder|to be confirmed|human review|not provided|missing\b/i.test(text)) {
+    reasons.push(
+      ...segmentMetricIssues({
+        reportData: input.reportData,
+        slideText: text,
+        slideTitle: title,
+      }),
+    );
+    if (
+      hasUnsupportedComparatorData(input.reportData) &&
+      unsupportedComparatorClaim(text) &&
+      !slideLooksLikePlaceholder(text)
+    ) {
+      reasons.push("Contains unsupported YoY, prior-year, or comparator commentary.");
+    }
+    if (malformedPlaceholderText(text)) {
+      reasons.push("Contains malformed copied template placeholder/date text.");
+    }
+    if (slideLooksLikePlaceholder(text)) {
       reasons.push("Marked as placeholder or human-review content.");
     }
 
-    const status = reasons.some((reason) => reason.includes("stale"))
+    const hasBlockingReason = reasons.some(
+      (reason) =>
+        reason.includes("stale") ||
+        reason.includes("segment") ||
+        reason.includes("unsupported") ||
+        reason.includes("malformed"),
+    );
+    const status = hasBlockingReason
       ? "needs-human-review"
       : reasons.length > 0
         ? "placeholder"
@@ -1250,9 +1717,19 @@ async function auditGoogleSlidesDeck(input: {
       reasons,
     };
   });
+  const blockingSlideIssues = slideStatuses
+    .filter((slide) => asString(slide.status) === "needs-human-review")
+    .map((slide) => ({
+      slideIndex: slide.slideIndex,
+      slideObjectId: slide.slideObjectId,
+      reasons: slide.reasons,
+    }));
   const score = Math.max(
     0,
-    100 - staleReferences.length * 10 - missingExpectedValues.length * 4,
+    100 -
+      staleReferences.length * 10 -
+      missingExpectedValues.length * 4 -
+      blockingSlideIssues.length * 12,
   );
   const recommendations = [
     staleReferences.length > 0
@@ -1260,6 +1737,9 @@ async function auditGoogleSlidesDeck(input: {
       : "",
     missingExpectedValues.length > 0
       ? "Add missing calculated KPI values from report_data.json to the deck or explain why they are not applicable."
+      : "",
+    blockingSlideIssues.length > 0
+      ? "Fix slides marked needs-human-review: use segment-level report_data values, remove unsupported YoY/comparator claims, or convert unsupported slides to placeholders."
       : "",
     "Use deck-map element IDs for slide-scoped edits instead of broad global text replacement.",
   ].filter(Boolean);
@@ -1270,10 +1750,14 @@ async function auditGoogleSlidesDeck(input: {
     targetClient,
     targetMarket,
     expectedCurrency,
-    passed: staleReferences.length === 0 && missingExpectedValues.length <= 1,
+    passed:
+      staleReferences.length === 0 &&
+      missingExpectedValues.length <= 1 &&
+      blockingSlideIssues.length === 0,
     score,
     staleReferences,
     missingExpectedValues,
+    blockingSlideIssues,
     slideStatuses,
     recommendations,
     deckMap,
@@ -2617,6 +3101,7 @@ async function executeOneTool(input: {
         score: auditResult.score,
         staleReferences: auditResult.staleReferences,
         missingExpectedValues: auditResult.missingExpectedValues,
+        blockingSlideIssues: auditResult.blockingSlideIssues,
         slideStatuses: auditResult.slideStatuses,
         recommendations: auditResult.recommendations,
       };
