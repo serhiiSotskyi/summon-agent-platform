@@ -261,6 +261,8 @@ function compactAuditPayload(payload: Record<string, unknown>) {
     staleReferences: asObjectArray(payload.staleReferences).slice(0, 12),
     missingExpectedValues: asStringArray(payload.missingExpectedValues).slice(0, 12),
     blockingSlideIssues: asObjectArray(payload.blockingSlideIssues).slice(0, 20),
+    coverageIssues: asStringArray(payload.coverageIssues).slice(0, 8),
+    coverage: payload.coverage,
     recommendations: asStringArray(payload.recommendations).slice(0, 8),
   };
 }
@@ -849,7 +851,7 @@ function missingWorkflowOutcomes(input: {
       !hasPassingDeckAudit(input.toolResults)
     ) {
       missing.push(
-        "The latest generated deck audit failed. Fix stale template content, missing KPI values, or placeholder decisions and rerun the audit.",
+        "The latest generated deck audit failed. Fix stale template content, missing KPI values, low content coverage, or placeholder decisions and rerun the audit.",
       );
     }
   }
@@ -3415,12 +3417,40 @@ async function auditGoogleSlidesDeck(input: {
       slideObjectId: slide.slideObjectId,
       reasons: slide.reasons,
     }));
+  const reportHasStructuredData = expectedValues.length > 0;
+  const reportSlides = slideStatuses.filter(
+    (slide) => asString(slide.classification) !== "section_divider",
+  );
+  const placeholderSlides = reportSlides.filter(
+    (slide) => asString(slide.status) === "placeholder",
+  );
+  const updatedSlides = reportSlides.filter(
+    (slide) => asString(slide.status) === "updated-or-review",
+  );
+  const minimumUpdatedSlides =
+    reportSlides.length >= 6
+      ? Math.min(8, Math.max(3, Math.ceil(reportSlides.length * 0.2)))
+      : 1;
+  const placeholderRatio =
+    reportSlides.length > 0 ? placeholderSlides.length / reportSlides.length : 0;
+  const coverageIssues =
+    reportHasStructuredData && reportSlides.length >= 6
+      ? [
+          updatedSlides.length < minimumUpdatedSlides
+            ? `Only ${updatedSlides.length} of ${reportSlides.length} report slides are updated/review-ready; at least ${minimumUpdatedSlides} are required for a usable generated deck.`
+            : "",
+          placeholderRatio > 0.75
+            ? `${placeholderSlides.length} of ${reportSlides.length} report slides are placeholders; a generated deck cannot pass with more than 75% placeholder slides.`
+            : "",
+        ].filter(Boolean)
+      : [];
   const score = Math.max(
     0,
     100 -
       staleReferences.length * 10 -
       missingExpectedValues.length * 4 -
-      blockingSlideIssues.length * 12,
+      blockingSlideIssues.length * 12 -
+      coverageIssues.length * 18,
   );
   const recommendations = [
     staleReferences.length > 0
@@ -3431,6 +3461,9 @@ async function auditGoogleSlidesDeck(input: {
       : "",
     blockingSlideIssues.length > 0
       ? "Fix slides marked needs-human-review: use segment-level report_data values, remove unsupported YoY/comparator claims, remove stale copied visual/chart evidence, or convert unsupported slides to placeholders."
+      : "",
+    coverageIssues.length > 0
+      ? "Increase report coverage: update more template slides with calculated values, chart images, tables, and commentary instead of converting most slides to placeholders."
       : "",
     "Use deck-map element IDs for slide-scoped edits instead of broad global text replacement.",
   ].filter(Boolean);
@@ -3444,11 +3477,20 @@ async function auditGoogleSlidesDeck(input: {
     passed:
       staleReferences.length === 0 &&
       missingExpectedValues.length <= 1 &&
-      blockingSlideIssues.length === 0,
+      blockingSlideIssues.length === 0 &&
+      coverageIssues.length === 0,
     score,
     staleReferences,
     missingExpectedValues,
     blockingSlideIssues,
+    coverageIssues,
+    coverage: {
+      reportSlideCount: reportSlides.length,
+      placeholderSlideCount: placeholderSlides.length,
+      updatedSlideCount: updatedSlides.length,
+      placeholderRatio,
+      minimumUpdatedSlides,
+    },
     slideStatuses,
     recommendations,
     deckMap,
@@ -5051,6 +5093,8 @@ async function executeOneTool(input: {
         staleReferences: auditResult.staleReferences,
         missingExpectedValues: auditResult.missingExpectedValues,
         blockingSlideIssues: auditResult.blockingSlideIssues,
+        coverageIssues: auditResult.coverageIssues,
+        coverage: auditResult.coverage,
         slideStatuses: auditResult.slideStatuses,
         recommendations: auditResult.recommendations,
       };
