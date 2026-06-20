@@ -1418,6 +1418,24 @@ function genericReplaceSlideTextRequest(slideObjectId: string, find: string, rep
   };
 }
 
+function genericUpdateTextElementRequests(objectId: string, text: string) {
+  return [
+    {
+      deleteText: {
+        objectId,
+        textRange: { type: "ALL" },
+      },
+    },
+    {
+      insertText: {
+        objectId,
+        insertionIndex: 0,
+        text,
+      },
+    },
+  ];
+}
+
 function pushGenericSlideReplacement(
   requests: Record<string, unknown>[],
   seen: Set<string>,
@@ -1436,6 +1454,24 @@ function pushGenericSlideReplacement(
   }
   seen.add(key);
   requests.push(genericReplaceSlideTextRequest(slideObjectId, trimmedFind, trimmedReplace));
+}
+
+function pushGenericTextElementUpdate(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  objectId: string,
+  text: string,
+) {
+  const trimmedText = text.trim();
+  if (!objectId || !trimmedText) {
+    return;
+  }
+  const key = `element\u0000${objectId}\u0000${trimmedText}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  requests.push(...genericUpdateTextElementRequests(objectId, trimmedText));
 }
 
 function staleTermRegex(term: string) {
@@ -1601,6 +1637,9 @@ function shouldPreservePlaceholderElement(text: string, slideTitle: string) {
   if (!normalized) {
     return true;
   }
+  if (malformedPlaceholderText(text)) {
+    return false;
+  }
   if (normalized === slideTitle.trim().toLowerCase()) {
     return true;
   }
@@ -1671,17 +1710,20 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     ) {
       const placeholderText = placeholderTextForSlide(reportData, slideText);
       const placeholderElements = textElements
-        .map((element) => asString(element.text))
-        .filter((text) => !shouldPreservePlaceholderElement(text, slideTitle))
-        .filter((text) => text.trim().length > 0 && text.trim() !== "—")
-        .sort((a, b) => b.length - a.length);
+        .filter((element) => asString(element.source) === "shape")
+        .map((element) => ({
+          objectId: asString(element.objectId),
+          text: asString(element.text),
+        }))
+        .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle))
+        .filter((element) => element.objectId && element.text.trim().length > 0 && element.text.trim() !== "—")
+        .sort((a, b) => b.text.length - a.text.length);
 
-      placeholderElements.slice(0, 80).forEach((text, index) => {
-        pushGenericSlideReplacement(
+      placeholderElements.slice(0, 80).forEach((element, index) => {
+        pushGenericTextElementUpdate(
           placeholderRequests,
           seen,
-          slideObjectId,
-          text,
+          element.objectId,
           index === 0 ? placeholderText : "—",
         );
       });
@@ -1749,17 +1791,40 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       }
     });
 
-    const longText = textElements
-      .map((element) => asString(element.text))
-      .filter((text) => text.length > 140)
+    const longTextElement = textElements
+      .filter((element) => asString(element.source) === "shape")
+      .map((element) => ({
+        objectId: asString(element.objectId),
+        text: asString(element.text),
+      }))
+      .filter((element) => element.objectId && element.text.length > 140)
       .at(-1);
     if (
-      longText &&
-      (/\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longText) ||
+      longTextElement &&
+      (/\b(uk|united kingdom|£|summary|performance|trend)\b/i.test(longTextElement.text) ||
         containsUnsupportedComparator ||
         slideSegmentForReportData(reportData, slideText, slideTitle))
     ) {
-      pushGenericSlideReplacement(updateRequests, seen, slideObjectId, longText, commentary);
+      pushGenericTextElementUpdate(updateRequests, seen, longTextElement.objectId, commentary);
+    }
+
+    const segment = slideSegmentForReportData(reportData, slideText, slideTitle);
+    const missingSegmentCore = segmentMetricIssues({ reportData, slideText, slideTitle }).some((issue) =>
+      issue.includes("missing core segment values"),
+    );
+    if (segment && missingSegmentCore && !isSegmentTrendSlide(slideText, slideTitle)) {
+      const fallbackElement = textElements
+        .filter((element) => asString(element.source) === "shape")
+        .map((element) => ({
+          objectId: asString(element.objectId),
+          text: asString(element.text),
+        }))
+        .filter((element) => element.objectId && !shouldPreservePlaceholderElement(element.text, slideTitle))
+        .sort((a, b) => b.text.length - a.text.length)
+        .at(0);
+      if (fallbackElement) {
+        pushGenericTextElementUpdate(updateRequests, seen, fallbackElement.objectId, commentary);
+      }
     }
 
     for (const term of currencyStaleTerms) {
