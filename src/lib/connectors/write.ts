@@ -790,6 +790,167 @@ async function googleCredentialAndToken(workspaceId: string) {
   };
 }
 
+type GoogleWorkspaceCapabilityStatus = "READY" | "DEGRADED" | "ERROR";
+
+type GoogleWorkspaceCapability = {
+  key: "drive" | "docs" | "sheets" | "slides";
+  name: string;
+  status: GoogleWorkspaceCapabilityStatus;
+  message: string;
+  action?: string;
+};
+
+async function probeGoogleApi(input: {
+  accessToken: string;
+  key: GoogleWorkspaceCapability["key"];
+  name: string;
+  url: string;
+  readyMessage: string;
+  disabledAction: string;
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6_000);
+  try {
+    const response = await fetch(input.url, {
+      headers: { Authorization: `Bearer ${input.accessToken}` },
+      signal: controller.signal,
+    });
+    const payload = await readJson(response);
+
+    if (response.ok || response.status === 400 || response.status === 404) {
+      return {
+        key: input.key,
+        name: input.name,
+        status: "READY",
+        message: input.readyMessage,
+      } satisfies GoogleWorkspaceCapability;
+    }
+
+    const message = await apiErrorMessage(input.name, response, payload);
+    if (isGoogleApiDisabledError(new Error(message))) {
+      return {
+        key: input.key,
+        name: input.name,
+        status: "DEGRADED",
+        message,
+        action: input.disabledAction,
+      } satisfies GoogleWorkspaceCapability;
+    }
+
+    return {
+      key: input.key,
+      name: input.name,
+      status: "ERROR",
+      message,
+      action: "Reconnect Google Drive or check the Google Cloud OAuth/API configuration.",
+    } satisfies GoogleWorkspaceCapability;
+  } catch (error) {
+    const cause =
+      error instanceof Error &&
+      "cause" in error &&
+      error.cause &&
+      typeof error.cause === "object" &&
+      "code" in error.cause &&
+      typeof error.cause.code === "string"
+        ? ` (${error.cause.code})`
+        : "";
+    const message =
+      error instanceof Error && error.name === "AbortError"
+        ? `${input.name} capability probe timed out.`
+        : error instanceof Error
+          ? `${error.message}${cause}`
+          : String(error);
+
+    return {
+      key: input.key,
+      name: input.name,
+      status: "ERROR",
+      message,
+      action:
+        "Retry the health check. If it persists, verify provider API access from Vercel/Railway and the Google Cloud API configuration.",
+    } satisfies GoogleWorkspaceCapability;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
+  try {
+    const { accessToken } = await googleCredentialAndToken(workspaceId);
+    const fakeId = "summon-diagnostic-probe-does-not-exist";
+    const capabilities = await Promise.all([
+      probeGoogleApi({
+        accessToken,
+        key: "drive",
+        name: "Google Drive API",
+        url: "https://www.googleapis.com/drive/v3/about?fields=user",
+        readyMessage: "Drive API is reachable for file search, copy, upload, and metadata.",
+        disabledAction:
+          "Enable the Google Drive API in the Google Cloud project used by this OAuth client.",
+      }),
+      probeGoogleApi({
+        accessToken,
+        key: "docs",
+        name: "Google Docs API",
+        url: `https://docs.googleapis.com/v1/documents/${encodeURIComponent(fakeId)}?fields=documentId`,
+        readyMessage:
+          "Docs API is reachable. The test document was intentionally fake, so this proves API availability without mutating files.",
+        disabledAction:
+          "Enable the Google Docs API in the Google Cloud project used by this OAuth client.",
+      }),
+      probeGoogleApi({
+        accessToken,
+        key: "sheets",
+        name: "Google Sheets API",
+        url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(fakeId)}?fields=spreadsheetId`,
+        readyMessage:
+          "Sheets API is reachable. Native ranges, formulas, formatting, and chart operations can be used when tools support them.",
+        disabledAction:
+          "Enable the Google Sheets API in the Google Cloud project used by this OAuth client. Until then, agents use Drive CSV fallback for simple run-owned sheets.",
+      }),
+      probeGoogleApi({
+        accessToken,
+        key: "slides",
+        name: "Google Slides API",
+        url: `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(fakeId)}?fields=presentationId`,
+        readyMessage:
+          "Slides API is reachable. The test presentation was intentionally fake, so this proves API availability without mutating files.",
+        disabledAction:
+          "Enable the Google Slides API in the Google Cloud project used by this OAuth client.",
+      }),
+    ]);
+
+    const status: GoogleWorkspaceCapabilityStatus = capabilities.some(
+      (capability) => capability.status === "ERROR",
+    )
+      ? "ERROR"
+      : capabilities.some((capability) => capability.status === "DEGRADED")
+        ? "DEGRADED"
+        : "READY";
+
+    return {
+      status,
+      checkedAt: new Date().toISOString(),
+      capabilities,
+    };
+  } catch (error) {
+    return {
+      status: "ERROR" as const,
+      checkedAt: new Date().toISOString(),
+      capabilities: [
+        {
+          key: "drive" as const,
+          name: "Google Workspace credential",
+          status: "ERROR" as const,
+          message: error instanceof Error ? error.message : String(error),
+          action:
+            "Reconnect Google Drive with write-capable scopes and confirm OAuth environment values.",
+        },
+      ],
+    };
+  }
+}
+
 function googleFileFields() {
   return "id,name,mimeType,webViewLink,webContentLink";
 }

@@ -15,6 +15,7 @@ import {
   hasGoogleOAuthEnv,
   hasNotionOAuthEnv,
 } from "@/lib/connectors/oauth";
+import { getGoogleWorkspaceDiagnostics } from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
 
 type Params = Promise<{ connectorId: string }>;
@@ -59,6 +60,10 @@ export default async function ConnectorDetailPage({
     (connector.provider === "google"
       ? !hasGoogleOAuthEnv()
       : !hasNotionOAuthEnv());
+  const diagnostics =
+    connected && !demo && connector.key === "google-drive"
+      ? await getGoogleWorkspaceDiagnostics(context.workspace.id)
+      : null;
   const oauthHref = `${connector.oauthPath}${
     connector.oauthPath.includes("?") ? "&" : "?"
   }workspace=${context.workspace.id}`;
@@ -170,6 +175,50 @@ export default async function ConnectorDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      {diagnostics ? (
+        <Card className="mt-5">
+          <CardHeader className="flex flex-row items-start justify-between gap-3">
+            <div>
+              <CardTitle>Runtime capability check</CardTitle>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                Non-mutating API probes for the connected Google credential.
+                These checks show whether agents can use native Workspace APIs
+                or must fall back to reduced behavior.
+              </p>
+            </div>
+            <StatusBadge status={diagnostics.status} />
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
+              Checked {new Date(diagnostics.checkedAt).toLocaleString("en-GB")}
+            </p>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {diagnostics.capabilities.map((capability) => (
+                <div
+                  className="rounded-md border border-white/10 bg-black/20 p-4"
+                  key={capability.key}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-medium text-white">
+                      {capability.name}
+                    </p>
+                    <StatusBadge status={capability.status} />
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-zinc-300">
+                    {capability.message}
+                  </p>
+                  {capability.action ? (
+                    <p className="mt-3 rounded-md border border-amber-300/20 bg-amber-300/10 p-3 text-sm leading-6 text-amber-100">
+                      {capability.action}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
     </>
   );
 }
