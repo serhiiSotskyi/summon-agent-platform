@@ -3168,11 +3168,22 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       containsStaleTerm &&
       !containsExpectedValue &&
       !/summary|overview|performance report|qbr/i.test(slideText);
+    const shouldRegenerateBlockingContent =
+      containsUnsupportedComparator ||
+      auditReasons.some((reason) =>
+        /unsupported|copied visual|copied chart|copied image|stale source/i.test(reason),
+      );
+    const generatedContentSlideLimit = shouldRegenerateBlockingContent
+      ? minimumGeneratedContentSlides + 6
+      : minimumGeneratedContentSlides;
     const canConvertToGeneratedContent =
       canGenerateContentSlides &&
       asString(slide.classification) !== "section_divider" &&
-      generatedContentSlideCount < minimumGeneratedContentSlides &&
-      (shouldHardPlaceholder || shouldSoftPlaceholder || copiedVisuals.length > 0);
+      generatedContentSlideCount < generatedContentSlideLimit &&
+      (shouldHardPlaceholder ||
+        shouldSoftPlaceholder ||
+        shouldRegenerateBlockingContent ||
+        copiedVisuals.length > 0);
 
     if (canConvertToGeneratedContent) {
       pushGenericGeneratedReportSlideRequests(updateRequests, seen, {
