@@ -1898,7 +1898,7 @@ function pushGenericTrendChartRequests(
   const top = box.translateY;
   const width = box.width;
   const height = box.height;
-  const titleHeight = Math.max(150_000, Math.min(230_000, height * 0.14));
+  const titleHeight = Math.max(210_000, Math.min(300_000, height * 0.18));
   const labelWidth = Math.max(560_000, Math.min(700_000, width * 0.22));
   const valueWidth = Math.max(700_000, Math.min(980_000, width * 0.26));
   const gutter = Math.max(70_000, Math.min(120_000, width * 0.035));
@@ -1913,8 +1913,8 @@ function pushGenericTrendChartRequests(
     y: top,
     width,
     height: titleHeight,
-    text: `${chartMetricLabel(metricKey)} by month - generated from uploaded data`,
-    fontSizePt: 12,
+    text: `Monthly ${chartMetricLabel(metricKey)} (generated from uploaded data)`,
+    fontSizePt: 10,
     bold: true,
   });
 
@@ -2125,7 +2125,7 @@ function generatedChartMetricIssues(input: {
   reportData: Record<string, unknown>;
   slideText: string;
 }) {
-  if (!/by month - generated from uploaded data/i.test(input.slideText)) {
+  if (!/generated from uploaded data/i.test(input.slideText)) {
     return [];
   }
 
@@ -2142,7 +2142,11 @@ function generatedChartMetricIssues(input: {
   ] as const;
 
   for (const [metricKey, label] of chartKeys) {
-    if (!new RegExp(`${label}\\s+by month - generated from uploaded data`, "i").test(input.slideText)) {
+    const chartTitlePattern = new RegExp(
+      `(?:${label}\\s+by month|Monthly\\s+${label})\\s+(?:- |\\()?generated from uploaded data`,
+      "i",
+    );
+    if (!chartTitlePattern.test(input.slideText)) {
       continue;
     }
 
