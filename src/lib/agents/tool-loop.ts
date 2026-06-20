@@ -161,6 +161,11 @@ type ToolResultFocus = {
   slideObjectIds: Set<string>;
 };
 
+type DeckAuditBlockingIssue = {
+  slideObjectId: string;
+  reasons: string[];
+};
+
 function latestToolResultFocus(results: unknown[]): ToolResultFocus | undefined {
   const latestAudit = successfulToolResults(results)
     .filter((result) => result.toolName === "google.slides.auditDeck")
@@ -172,6 +177,36 @@ function latestToolResultFocus(results: unknown[]): ToolResultFocus | undefined 
   );
 
   return slideObjectIds.size > 0 ? { slideObjectIds } : undefined;
+}
+
+function latestDeckAuditBlockingIssues(results: unknown[]) {
+  const latestAudit = successfulToolResults(results)
+    .filter((result) => result.toolName === "google.slides.auditDeck")
+    .at(-1);
+  const auditResult = asRecord(latestAudit?.result);
+  const issuesBySlide = new Map<string, DeckAuditBlockingIssue>();
+
+  for (const issue of asObjectArray(auditResult.blockingSlideIssues)) {
+    const slideObjectId = asString(issue.slideObjectId);
+    if (!slideObjectId) {
+      continue;
+    }
+    const reasons = asStringArray(issue.reasons);
+    issuesBySlide.set(slideObjectId, {
+      slideObjectId,
+      reasons,
+    });
+  }
+
+  return issuesBySlide;
+}
+
+function auditIssueRequiresPlaceholder(reasons: string[]) {
+  return reasons.some((reason) =>
+    /must be a placeholder|missing core segment values|no segment-level trend data|appears to use overall report metrics/i.test(
+      reason,
+    ),
+  );
 }
 
 function compactDeckMapPayload(payload: Record<string, unknown>, focus?: ToolResultFocus) {
@@ -2476,8 +2511,13 @@ function shouldPlaceholderReportSlide(reportData: Record<string, unknown>, slide
   );
 }
 
-function placeholderTextForSlide(reportData: Record<string, unknown>, slideText: string) {
-  const reason = placeholderReason(reportData, slideText);
+function placeholderTextForSlide(
+  reportData: Record<string, unknown>,
+  slideText: string,
+  auditReasons: string[] = [],
+) {
+  const reason =
+    auditReasons.filter(Boolean).slice(0, 2).join(" ") || placeholderReason(reportData, slideText);
   return [
     "Placeholder - supporting data was not provided for this run.",
     reason ? `Reason: ${reason}` : "",
@@ -2531,6 +2571,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
   const reportData = metricArtifactJson(results);
   const metadata = reportMetadataFromArtifact(reportData);
   const deckMap = latestDeckMap(results);
+  const auditIssuesBySlide = latestDeckAuditBlockingIssues(results);
   const slides = asObjectArray(deckMap.slides);
   if (Object.keys(reportData).length === 0 || slides.length === 0) {
     return [];
@@ -2560,6 +2601,9 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     const pageElements = asObjectArray(slide.pageElements);
     const slideText = textElements.map((element) => asString(element.text)).join(" ");
     const slideTitle = asString(slide.titleCandidate);
+    const auditIssue = auditIssuesBySlide.get(slideObjectId);
+    const auditReasons = auditIssue?.reasons ?? [];
+    const auditRequiresPlaceholder = auditIssueRequiresPlaceholder(auditReasons);
     const containsStaleTerm = staleTerms.some((term) => staleTermMatches(slideText, term));
     const containsExpectedValue = expectedReportValues(reportData).some((value) =>
       slideText.includes(value),
@@ -2582,35 +2626,28 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       slideTitle,
     });
 
-    layoutIssues.forEach((issue) => {
-      pushGenericTextElementUpdate(
-        updateRequests,
-        seen,
-        issue.objectId,
-        compactLayoutRepairText({
-          reportData,
-          slideText,
-          slideTitle,
-          issue,
-        }),
-      );
-    });
-
     if (
+      auditRequiresPlaceholder ||
       shouldPlaceholderReportSlide(reportData, slideText) ||
       shouldPlaceholderSegmentTrendSlide(reportData, slideText, slideTitle) ||
       placeholderWithCopiedTableContent ||
       malformedPlaceholderText(slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
-      const placeholderText = placeholderTextForSlide(reportData, slideText);
+      const placeholderText = placeholderTextForSlide(reportData, slideText, auditReasons);
       const shapeElements = textElements
         .filter((element) => asString(element.source) === "shape")
         .map((element) => ({
           objectId: asString(element.objectId),
           text: asString(element.text),
         }))
-        .filter((element) => element.objectId && element.text.trim().length > 0 && element.text.trim() !== "—");
+        .filter(
+          (element) =>
+            element.objectId &&
+            !isRunGeneratedSlidesElement(element.objectId) &&
+            element.text.trim().length > 0 &&
+            element.text.trim() !== "—",
+        );
       const placeholderElements = shapeElements
         .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle))
         .sort((a, b) => b.text.length - a.text.length);
@@ -2669,6 +2706,20 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       }
       continue;
     }
+
+    layoutIssues.forEach((issue) => {
+      pushGenericTextElementUpdate(
+        updateRequests,
+        seen,
+        issue.objectId,
+        compactLayoutRepairText({
+          reportData,
+          slideText,
+          slideTitle,
+          issue,
+        }),
+      );
+    });
 
     for (const [visualIndex, visual] of copiedVisuals
       .slice()
