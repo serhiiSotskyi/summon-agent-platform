@@ -1561,6 +1561,108 @@ function pushGenericTextBoxRequest(
   );
 }
 
+function elementPropertiesForBox(input: {
+  slideObjectId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}) {
+  return {
+    pageObjectId: input.slideObjectId,
+    size: {
+      width: { magnitude: Math.max(1, input.width), unit: "EMU" },
+      height: { magnitude: Math.max(1, input.height), unit: "EMU" },
+    },
+    transform: {
+      scaleX: 1,
+      scaleY: 1,
+      translateX: input.x,
+      translateY: input.y,
+      unit: "EMU",
+    },
+  };
+}
+
+function pushGenericRectangleRequest(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  input: {
+    objectId: string;
+    slideObjectId: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    color?: { red: number; green: number; blue: number };
+  },
+) {
+  if (seen.has(`shape\u0000${input.objectId}`)) {
+    return;
+  }
+  seen.add(`shape\u0000${input.objectId}`);
+  requests.push({
+    createShape: {
+      objectId: input.objectId,
+      shapeType: "RECTANGLE",
+      elementProperties: elementPropertiesForBox(input),
+    },
+  });
+  if (input.color) {
+    requests.push({
+      updateShapeProperties: {
+        objectId: input.objectId,
+        shapeProperties: {
+          shapeBackgroundFill: {
+            solidFill: {
+              color: {
+                rgbColor: input.color,
+              },
+            },
+          },
+        },
+        fields: "shapeBackgroundFill.solidFill.color",
+      },
+    });
+  }
+}
+
+function pushGenericPositionedTextRequest(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  input: {
+    objectId: string;
+    slideObjectId: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    text: string;
+  },
+) {
+  const text = input.text.trim();
+  if (!text || seen.has(`shape\u0000${input.objectId}`)) {
+    return;
+  }
+  seen.add(`shape\u0000${input.objectId}`);
+  requests.push(
+    {
+      createShape: {
+        objectId: input.objectId,
+        shapeType: "TEXT_BOX",
+        elementProperties: elementPropertiesForBox(input),
+      },
+    },
+    {
+      insertText: {
+        objectId: input.objectId,
+        insertionIndex: 0,
+        text,
+      },
+    },
+  );
+}
+
 function staleTermRegex(term: string) {
   const normalized = term.trim().toLowerCase();
   if (!normalized) {
@@ -1651,6 +1753,172 @@ function monthlyTrendRows(reportData: Record<string, unknown>) {
     metrics: asRecord(metrics),
   }));
   return rows.sort((a, b) => a.period.localeCompare(b.period));
+}
+
+function chartMetricValue(metrics: Record<string, unknown>, metricKey: string) {
+  if (metricKey === "cost") {
+    return numericMetric(metrics.cost ?? metrics.spend);
+  }
+  if (metricKey === "leads") {
+    return numericMetric(metrics.sales_leads ?? metrics.leads ?? metrics.conversions);
+  }
+  return numericMetric(metrics[metricKey]);
+}
+
+function chartMetricLabel(metricKey: string) {
+  if (metricKey === "cost") {
+    return "Spend";
+  }
+  if (metricKey === "cpl") {
+    return "CPL";
+  }
+  if (metricKey === "leads") {
+    return "Leads";
+  }
+  if (metricKey === "ctr") {
+    return "CTR";
+  }
+  if (metricKey === "cvr") {
+    return "CVR";
+  }
+  if (metricKey === "clicks") {
+    return "Clicks";
+  }
+  return metricKey.toUpperCase();
+}
+
+function formatChartMetricValue(value: number, metricKey: string, currency: string) {
+  if (metricKey === "cost") {
+    return formatReportCurrency(value, currency, true);
+  }
+  if (metricKey === "cpl") {
+    return formatReportDecimalCurrency(value, currency);
+  }
+  if (metricKey === "ctr" || metricKey === "cvr") {
+    return formatPercentMetric(value);
+  }
+  return formatIntegerMetric(value);
+}
+
+function chartMetricForVisual(input: {
+  visualIndex: number;
+  slideText: string;
+  slideTitle: string;
+}) {
+  const haystack = `${input.slideTitle}\n${input.slideText}`.toLowerCase();
+  if (/\bcpl\b|cost per lead/.test(haystack)) {
+    return input.visualIndex === 0 ? "cpl" : "cost";
+  }
+  if (/\bctr\b|click through/.test(haystack)) {
+    return input.visualIndex === 0 ? "ctr" : "clicks";
+  }
+  if (/\bconversion|cvr\b/.test(haystack)) {
+    return input.visualIndex === 0 ? "cvr" : "leads";
+  }
+  return ["cost", "cpl", "leads", "ctr"][input.visualIndex % 4];
+}
+
+function genericTrendChartRows(
+  reportData: Record<string, unknown>,
+  metricKey: string,
+) {
+  return monthlyTrendRows(reportData)
+    .map((row) => {
+      const value = chartMetricValue(row.metrics, metricKey);
+      return typeof value === "number" ? { period: row.period, value } : null;
+    })
+    .filter((row): row is { period: string; value: number } => Boolean(row));
+}
+
+function pushGenericTrendChartRequests(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  input: {
+    slideObjectId: string;
+    sourceObjectId: string;
+    visualIndex: number;
+    visual: Record<string, unknown>;
+    reportData: Record<string, unknown>;
+    slideText: string;
+    slideTitle: string;
+  },
+) {
+  const box = renderedElementBox(input.visual);
+  const metricKey = chartMetricForVisual({
+    visualIndex: input.visualIndex,
+    slideText: input.slideText,
+    slideTitle: input.slideTitle,
+  });
+  const rows = genericTrendChartRows(input.reportData, metricKey);
+  if (rows.length < 2) {
+    pushGenericTextBoxRequest(requests, seen, {
+      slideObjectId: input.slideObjectId,
+      sourceObjectId: input.sourceObjectId,
+      size: input.visual.size,
+      transform: input.visual.transform,
+      text: visualPlaceholderTextForSlide(input.reportData, input.slideText, input.slideTitle),
+    });
+    return;
+  }
+
+  const metadata = reportMetadataFromArtifact(input.reportData);
+  const currency = metadata.currency || "GBP";
+  const max = Math.max(...rows.map((row) => row.value), 1);
+  const left = box.translateX;
+  const top = box.translateY;
+  const width = box.width;
+  const height = box.height;
+  const titleHeight = Math.max(160_000, height * 0.16);
+  const labelWidth = Math.max(420_000, width * 0.2);
+  const valueWidth = Math.max(470_000, width * 0.22);
+  const chartWidth = Math.max(600_000, width - labelWidth - valueWidth - 180_000);
+  const rowHeight = Math.max(155_000, (height - titleHeight - 80_000) / rows.length);
+  const baseId = stableSlidesObjectId("summon_chart", input.sourceObjectId);
+
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: `${baseId}_title`.slice(0, 48),
+    slideObjectId: input.slideObjectId,
+    x: left,
+    y: top,
+    width,
+    height: titleHeight,
+    text: `${chartMetricLabel(metricKey)} by month - generated from uploaded data`,
+  });
+
+  rows.forEach((row, index) => {
+    const y = top + titleHeight + index * rowHeight;
+    const barWidth = Math.max(40_000, (row.value / max) * chartWidth);
+    const labelId = `${baseId}_l_${index}`.slice(0, 48);
+    const barId = `${baseId}_b_${index}`.slice(0, 48);
+    const valueId = `${baseId}_v_${index}`.slice(0, 48);
+    pushGenericPositionedTextRequest(requests, seen, {
+      objectId: labelId,
+      slideObjectId: input.slideObjectId,
+      x: left,
+      y,
+      width: labelWidth,
+      height: rowHeight * 0.72,
+      text: row.period,
+    });
+    pushGenericRectangleRequest(requests, seen, {
+      objectId: barId,
+      slideObjectId: input.slideObjectId,
+      x: left + labelWidth,
+      y: y + rowHeight * 0.16,
+      width: barWidth,
+      height: rowHeight * 0.48,
+      color: { red: 0.22, green: 0.76, blue: 0.52 },
+    });
+    pushGenericPositionedTextRequest(requests, seen, {
+      objectId: valueId,
+      slideObjectId: input.slideObjectId,
+      x: left + labelWidth + chartWidth + 60_000,
+      y,
+      width: valueWidth,
+      height: rowHeight * 0.72,
+      text: formatChartMetricValue(row.value, metricKey, currency),
+    });
+  });
 }
 
 function visualPlaceholderTextForSlide(
@@ -2097,15 +2365,23 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       continue;
     }
 
-    for (const visual of copiedVisuals) {
+    for (const [visualIndex, visual] of copiedVisuals
+      .slice()
+      .sort(
+        (a, b) =>
+          renderedElementBox(a).translateX - renderedElementBox(b).translateX,
+      )
+      .entries()) {
       const objectId = asString(visual.objectId);
       pushGenericDeleteObjectRequest(updateRequests, seen, objectId);
-      pushGenericTextBoxRequest(updateRequests, seen, {
+      pushGenericTrendChartRequests(updateRequests, seen, {
         slideObjectId,
         sourceObjectId: objectId,
-        size: visual.size,
-        transform: visual.transform,
-        text: visualPlaceholderTextForSlide(reportData, slideText, slideTitle),
+        visualIndex,
+        visual,
+        reportData,
+        slideText,
+        slideTitle,
       });
     }
 
