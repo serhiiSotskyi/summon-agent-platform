@@ -4497,6 +4497,10 @@ async function executeOneTool(input: {
   const db = getDb();
   const toolName = input.call.tool;
   const request = asRecord(input.call.input);
+  const definition = isGenericAgentToolKey(toolName)
+    ? genericToolDefinition(toolName)
+    : undefined;
+  const toolTimeoutMs = definition?.timeoutMs ?? 45_000;
   const startedAt = Date.now();
   const toolCall = await db.toolCall.create({
     data: {
@@ -4510,8 +4514,13 @@ async function executeOneTool(input: {
         parameters: request,
       }),
       metadata: toJsonValue({
+        approvalPolicy: definition?.approvalPolicy,
+        authRequirement: definition?.authRequirement,
         reason: input.call.reason,
+        retryPolicy: definition?.retryPolicy,
+        riskLevel: definition?.riskLevel,
         selectedByAgent: true,
+        timeoutMs: toolTimeoutMs,
       }),
     },
   });
@@ -4539,20 +4548,19 @@ async function executeOneTool(input: {
   const artifacts: unknown[] = [];
 
   try {
-    let result: unknown;
+    const result = await withLocalTimeout(
+      (async () => {
+        let result: unknown;
 
     if (toolName === "python.run") {
-      const sandbox = await withLocalTimeout(
-        runPythonInSandbox({
+      const sandbox = await runPythonInSandbox({
           runId: input.agentRunId,
           files: input.agent.files,
           code: asString(request.code),
           entryFile: asString(request.entryFile),
           args: asStringArray(request.args),
-        }),
-        "python.run",
-        75_000,
-      );
+          timeoutMs: toolTimeoutMs,
+        });
       const generatedArtifacts = [];
       for (const file of sandbox.generatedFiles) {
         let parsedJson: Record<string, unknown> | undefined;
@@ -5062,6 +5070,16 @@ async function executeOneTool(input: {
         links,
       });
     }
+
+        if (typeof result === "undefined") {
+          throw new Error(`Tool ${toolName} did not return a result.`);
+        }
+
+        return result;
+      })(),
+      toolName,
+      toolTimeoutMs,
+    );
 
     await db.toolCall.update({
       where: { id: toolCall.id },
