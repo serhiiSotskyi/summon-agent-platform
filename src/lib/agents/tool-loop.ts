@@ -1929,6 +1929,9 @@ function textLayoutIssueForElement(
   if (!objectId || !text || !box) {
     return null;
   }
+  if (isRunGeneratedSlidesElement(objectId)) {
+    return null;
+  }
 
   const isHeaderBand = box.translateY < HEADER_BAND_MAX_Y_EMU;
   const isTinyTextBox = box.height < 520_000 || box.width < 900_000;
@@ -2946,26 +2949,6 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       );
     });
 
-    for (const [visualIndex, visual] of copiedVisuals
-      .slice()
-      .sort(
-        (a, b) =>
-          renderedElementBox(a).translateX - renderedElementBox(b).translateX,
-      )
-      .entries()) {
-      const objectId = asString(visual.objectId);
-      pushGenericDeleteObjectRequest(updateRequests, seen, objectId);
-      pushGenericTrendChartRequests(updateRequests, seen, {
-        slideObjectId,
-        sourceObjectId: objectId,
-        visualIndex,
-        visual,
-        reportData,
-        slideText,
-        slideTitle,
-      });
-    }
-
     if (containsUnsupportedComparator) {
       textElements
         .map((element) => asString(element.text))
@@ -3145,6 +3128,26 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       if (replacement) {
         pushGenericSlideReplacement(updateRequests, seen, slideObjectId, term, replacement);
       }
+    }
+
+    for (const [visualIndex, visual] of copiedVisuals
+      .slice()
+      .sort(
+        (a, b) =>
+          renderedElementBox(a).translateX - renderedElementBox(b).translateX,
+      )
+      .entries()) {
+      const objectId = asString(visual.objectId);
+      pushGenericDeleteObjectRequest(updateRequests, seen, objectId);
+      pushGenericTrendChartRequests(updateRequests, seen, {
+        slideObjectId,
+        sourceObjectId: objectId,
+        visualIndex,
+        visual,
+        reportData,
+        slideText,
+        slideTitle,
+      });
     }
   }
 
