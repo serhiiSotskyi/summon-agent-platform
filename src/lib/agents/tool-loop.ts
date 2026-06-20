@@ -3201,10 +3201,11 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       slideText,
       slideTitle,
     });
+    const segmentDataRequiresPlaceholder =
+      auditRequiresPlaceholder || shouldPlaceholderSegmentTrendSlide(reportData, slideText, slideTitle);
     const shouldHardPlaceholder =
-      auditRequiresPlaceholder ||
+      segmentDataRequiresPlaceholder ||
       shouldPlaceholderReportSlide(reportData, slideText) ||
-      shouldPlaceholderSegmentTrendSlide(reportData, slideText, slideTitle) ||
       placeholderWithCopiedTableContent ||
       malformedPlaceholderText(slideText);
     const shouldSoftPlaceholder =
@@ -3222,6 +3223,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     const canConvertToGeneratedContent =
       canGenerateContentSlides &&
       asString(slide.classification) !== "section_divider" &&
+      !segmentDataRequiresPlaceholder &&
       generatedContentSlideCount < generatedContentSlideLimit &&
       (shouldHardPlaceholder ||
         shouldSoftPlaceholder ||
