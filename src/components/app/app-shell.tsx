@@ -3,6 +3,7 @@
 import { UserButton } from "@clerk/nextjs";
 import {
   BadgeCheck,
+  BookOpenText,
   Bot,
   Cable,
   CheckCircle2,
@@ -42,6 +43,7 @@ const navItems = [
   { href: "/app/approvals", label: "Approvals", icon: ClipboardCheck },
   { href: "/app/workspaces", label: "Workspaces", icon: Users },
   { href: "/app/settings", label: "Settings", icon: Settings },
+  { href: "/app/help", label: "Help", icon: BookOpenText },
 ];
 
 function withWorkspace(href: string, workspaceId: string, demo: boolean) {
