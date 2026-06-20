@@ -2713,10 +2713,23 @@ function placeholderTextForSlide(
     .join("\n");
 }
 
-function shouldPreservePlaceholderElement(text: string, slideTitle: string) {
+function shouldPreservePlaceholderElement(
+  text: string,
+  slideTitle: string,
+  staleTerms: string[] = [],
+) {
   const normalized = text.trim().toLowerCase();
   if (!normalized) {
     return true;
+  }
+  if (staleTerms.some((term) => staleTermMatches(text, term))) {
+    return false;
+  }
+  if (isLikelyMetricText(text)) {
+    return false;
+  }
+  if (slideLooksLikePlaceholder(text)) {
+    return false;
   }
   if (malformedPlaceholderText(text)) {
     return false;
@@ -2856,12 +2869,15 @@ function genericReportDeckBatchRequests(results: unknown[]) {
           (element) =>
             element.objectId &&
             !isRunGeneratedSlidesElement(element.objectId) &&
-            !isHeaderOrFooterTextBox(asRecord(element)) &&
+            !(
+              isHeaderOrFooterTextBox(asRecord(element)) &&
+              shouldPreservePlaceholderElement(element.text, slideTitle, staleTerms)
+            ) &&
             element.text.trim().length > 0 &&
             element.text.trim() !== "—",
         );
       const placeholderElements = shapeElements
-        .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle))
+        .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle, staleTerms))
         .sort((a, b) => b.text.length - a.text.length);
       const placeholderTargets =
         placeholderElements.length > 0
@@ -3118,7 +3134,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
               );
             },
           )
-          .at(0);
+        .at(0);
       if (fallbackElement) {
         pushGenericTextElementUpdate(updateRequests, seen, fallbackElement.objectId, commentary);
       }
