@@ -1339,7 +1339,7 @@ function hasUnsupportedComparatorData(reportData: Record<string, unknown>) {
 }
 
 function unsupportedComparatorClaim(text: string) {
-  return /\byoy\b\s*:?\s*[+-]?\d|\byear[- ]on[- ]year\b|\bvs\.?\s+(?:last|prior)\s+year\b|\blast year\b|\bprior year\b|\bmarket conditions\b/i.test(
+  return /\b(?:yoy|toy)\b\s*:?\s*[+-]?\d|\byear[- ]on[- ]year\b|\bvs\.?\s+(?:last|prior)\s+year\b|\blast year\b|\bprior year\b|\bmarket conditions\b/i.test(
     text,
   );
 }
@@ -1753,6 +1753,8 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     );
     const containsUnsupportedComparator =
       hasUnsupportedComparatorData(reportData) && unsupportedComparatorClaim(slideText);
+    const placeholderWithCopiedTableContent =
+      slideLooksLikePlaceholder(slideText) && hasSubstantiveTableContent(slide);
     const values = reportMetricValuesForSlide({
       reportData,
       slideText,
@@ -1768,6 +1770,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     if (
       shouldPlaceholderReportSlide(reportData, slideText) ||
       shouldPlaceholderSegmentTrendSlide(reportData, slideText, slideTitle) ||
+      placeholderWithCopiedTableContent ||
       malformedPlaceholderText(slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
@@ -2019,16 +2022,21 @@ async function auditGoogleSlidesDeck(input: {
     if (slideLooksLikePlaceholder(text)) {
       reasons.push("Marked as placeholder or human-review content.");
       if (hasSubstantiveTableContent(slide)) {
-        reasons.push("Placeholder slide still contains substantive copied table content.");
+        reasons.push("placeholder slide still contains substantive copied table content.");
       }
     }
 
     const hasBlockingReason = reasons.some(
-      (reason) =>
-        reason.includes("stale") ||
-        reason.includes("segment") ||
-        reason.includes("unsupported") ||
-        reason.includes("malformed"),
+      (reason) => {
+        const normalizedReason = reason.toLowerCase();
+        return (
+          normalizedReason.includes("stale") ||
+          normalizedReason.includes("segment") ||
+          normalizedReason.includes("unsupported") ||
+          normalizedReason.includes("malformed") ||
+          normalizedReason.includes("copied table content")
+        );
+      },
     );
     const status = hasBlockingReason
       ? "needs-human-review"
