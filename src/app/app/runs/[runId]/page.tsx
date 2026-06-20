@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { PageHeader } from "@/components/app/page-header";
 import { RunAutoRefresh } from "@/components/app/run-auto-refresh";
 import { StatusBadge } from "@/components/app/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCurrentUserContext } from "@/lib/app/context";
@@ -170,6 +171,11 @@ function readToolCalls(output: Prisma.JsonValue) {
         summary: null,
         status: "completed",
         durationMs: null,
+        approvalPolicy: null,
+        authRequirement: null,
+        retryPolicy: null,
+        riskLevel: null,
+        timeoutMs: null,
       };
     }
 
@@ -196,6 +202,11 @@ function readToolCalls(output: Prisma.JsonValue) {
       args: entry.args ?? entry.input ?? entry.parameters,
       result: entry.result,
       durationMs: typeof entry.durationMs === "number" ? entry.durationMs : null,
+      approvalPolicy: firstText(entry, ["approvalPolicy"]),
+      authRequirement: firstText(entry, ["authRequirement"]),
+      retryPolicy: firstText(entry, ["retryPolicy"]),
+      riskLevel: firstText(entry, ["riskLevel"]),
+      timeoutMs: typeof entry.timeoutMs === "number" ? entry.timeoutMs : null,
     };
   });
 }
@@ -218,6 +229,12 @@ function readDbToolCalls(toolCalls: DbToolCallRecord[]) {
       result: toolCall.response ?? (toolCall.error ? { error: toolCall.error } : null),
       durationMs: toolCall.durationMs,
       artifactCount: toolCall.artifacts.length,
+      approvalPolicy: firstText(metadata, ["approvalPolicy"]),
+      authRequirement: firstText(metadata, ["authRequirement"]),
+      retryPolicy: firstText(metadata, ["retryPolicy"]),
+      riskLevel: firstText(metadata, ["riskLevel"]),
+      timeoutMs:
+        typeof metadata.timeoutMs === "number" ? metadata.timeoutMs : null,
     };
   });
 }
@@ -350,6 +367,18 @@ function jsonPreview(value: unknown) {
 
 function humanizeValue(value: string) {
   return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function toolRiskVariant(riskLevel: string | null | undefined) {
+  if (riskLevel === "read" || riskLevel === "review") {
+    return "info";
+  }
+
+  if (riskLevel === "sandbox" || riskLevel === "run_owned_write") {
+    return "warning";
+  }
+
+  return "default";
 }
 
 function caveatText(record: OutputRecord) {
@@ -843,11 +872,49 @@ export default async function RunDetailPage({
                           Connector: <span className="text-zinc-200">{toolCall.connector}</span>
                         </p>
                       ) : null}
+                      {toolCall.riskLevel || typeof toolCall.timeoutMs === "number" ? (
+                        <div className="flex flex-wrap gap-2">
+                          {toolCall.riskLevel ? (
+                            <Badge variant={toolRiskVariant(toolCall.riskLevel)}>
+                              {humanizeValue(toolCall.riskLevel)}
+                            </Badge>
+                          ) : null}
+                          {typeof toolCall.timeoutMs === "number" ? (
+                            <Badge>
+                              {Math.round(toolCall.timeoutMs / 1000)}s timeout
+                            </Badge>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {typeof toolCall.durationMs === "number" ? (
                         <p>
                           Duration:{" "}
                           <span className="text-zinc-200">
                             {toolCall.durationMs}ms
+                          </span>
+                        </p>
+                      ) : null}
+                      {toolCall.authRequirement ? (
+                        <p>
+                          Auth:{" "}
+                          <span className="text-zinc-200">
+                            {toolCall.authRequirement}
+                          </span>
+                        </p>
+                      ) : null}
+                      {toolCall.approvalPolicy ? (
+                        <p>
+                          Approval:{" "}
+                          <span className="text-zinc-200">
+                            {toolCall.approvalPolicy}
+                          </span>
+                        </p>
+                      ) : null}
+                      {toolCall.retryPolicy ? (
+                        <p>
+                          Retry:{" "}
+                          <span className="text-zinc-200">
+                            {toolCall.retryPolicy}
                           </span>
                         </p>
                       ) : null}
