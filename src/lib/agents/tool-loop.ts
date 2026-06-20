@@ -1638,6 +1638,8 @@ function pushGenericPositionedTextRequest(
     width: number;
     height: number;
     text: string;
+    fontSizePt?: number;
+    bold?: boolean;
   },
 ) {
   const text = input.text.trim();
@@ -1661,6 +1663,26 @@ function pushGenericPositionedTextRequest(
       },
     },
   );
+  if (input.fontSizePt || typeof input.bold === "boolean") {
+    requests.push({
+      updateTextStyle: {
+        objectId: input.objectId,
+        style: {
+          ...(input.fontSizePt
+            ? { fontSize: { magnitude: input.fontSizePt, unit: "PT" } }
+            : {}),
+          ...(typeof input.bold === "boolean" ? { bold: input.bold } : {}),
+        },
+        textRange: { type: "ALL" },
+        fields: [
+          input.fontSizePt ? "fontSize" : "",
+          typeof input.bold === "boolean" ? "bold" : "",
+        ]
+          .filter(Boolean)
+          .join(","),
+      },
+    });
+  }
 }
 
 function staleTermRegex(term: string) {
@@ -1876,11 +1898,12 @@ function pushGenericTrendChartRequests(
   const top = box.translateY;
   const width = box.width;
   const height = box.height;
-  const titleHeight = Math.max(160_000, height * 0.16);
-  const labelWidth = Math.max(420_000, width * 0.2);
-  const valueWidth = Math.max(470_000, width * 0.22);
-  const chartWidth = Math.max(600_000, width - labelWidth - valueWidth - 180_000);
-  const rowHeight = Math.max(155_000, (height - titleHeight - 80_000) / rows.length);
+  const titleHeight = Math.max(150_000, Math.min(230_000, height * 0.14));
+  const labelWidth = Math.max(560_000, Math.min(700_000, width * 0.22));
+  const valueWidth = Math.max(700_000, Math.min(980_000, width * 0.26));
+  const gutter = Math.max(70_000, Math.min(120_000, width * 0.035));
+  const chartWidth = Math.max(520_000, width - labelWidth - valueWidth - gutter * 2);
+  const rowHeight = Math.max(165_000, (height - titleHeight - 70_000) / rows.length);
   const baseId = stableSlidesObjectId("summon_chart", input.sourceObjectId);
 
   pushGenericPositionedTextRequest(requests, seen, {
@@ -1891,6 +1914,8 @@ function pushGenericTrendChartRequests(
     width,
     height: titleHeight,
     text: `${chartMetricLabel(metricKey)} by month - generated from uploaded data`,
+    fontSizePt: 12,
+    bold: true,
   });
 
   rows.forEach((row, index) => {
@@ -1907,6 +1932,7 @@ function pushGenericTrendChartRequests(
       width: labelWidth,
       height: rowHeight * 0.72,
       text: row.period,
+      fontSizePt: 10,
     });
     pushGenericRectangleRequest(requests, seen, {
       objectId: barId,
@@ -1920,11 +1946,13 @@ function pushGenericTrendChartRequests(
     pushGenericPositionedTextRequest(requests, seen, {
       objectId: valueId,
       slideObjectId: input.slideObjectId,
-      x: left + labelWidth + chartWidth + 60_000,
+      x: left + labelWidth + chartWidth + gutter,
       y,
       width: valueWidth,
       height: rowHeight * 0.72,
       text: formatGeneratedChartMetricLabel(row.value, metricKey, currency),
+      fontSizePt: 10,
+      bold: true,
     });
   });
 }
