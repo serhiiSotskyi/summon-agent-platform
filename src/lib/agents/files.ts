@@ -29,6 +29,11 @@ type CreateAgentFileInput = {
   metadata?: Record<string, unknown>;
 };
 
+type ParsedUploadedFile = {
+  file: File;
+  role: AgentFileRole;
+};
+
 function formText(formData: FormData, key: string, fallback = "") {
   const value = formData.get(key);
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -73,6 +78,44 @@ function isTextLikeFile(file: File) {
     name.endsWith(".yaml") ||
     name.endsWith(".yml")
   );
+}
+
+async function createUploadedAgentFile({
+  agentId,
+  file,
+  role,
+  workspaceId,
+}: {
+  agentId: string;
+  file: File;
+  role: AgentFileRole;
+  workspaceId: string;
+}) {
+  if (file.size > MAX_AGENT_FILE_BYTES) {
+    throw new Error(
+      `${file.name} is too large for direct agent upload. Add it as a Google Drive link instead.`,
+    );
+  }
+  if (!isTextLikeFile(file)) {
+    throw new Error(
+      `${file.name} is not a supported text file. Upload CSV, Python, TXT, Markdown, JSON, or YAML; use a Drive link for binary files.`,
+    );
+  }
+
+  return createAgentFile({
+    agentId,
+    workspaceId,
+    name: file.name,
+    role,
+    sourceType: "uploaded_text",
+    originalFileName: file.name,
+    mimeType: file.type || "text/plain",
+    sizeBytes: file.size,
+    contentText: await file.text(),
+    metadata: {
+      addedFrom: "agent_form",
+    },
+  });
 }
 
 function labelFromUrl(url: string) {
@@ -155,41 +198,47 @@ export async function attachFilesFromFormData({
     );
   }
 
-  const uploadRole = normalizeRole(formText(formData, "uploadedFileRole", "input_data"));
-  for (const value of formData.getAll("agentFiles")) {
-    if (!isUsableFile(value)) {
-      continue;
-    }
-    if (value.size > MAX_AGENT_FILE_BYTES) {
-      throw new Error(
-        `${value.name} is too large for direct agent upload. Add it as a Google Drive link instead.`,
-      );
-    }
-    if (!isTextLikeFile(value)) {
-      throw new Error(
-        `${value.name} is not a supported text file. Upload CSV, Python, TXT, Markdown, JSON, or YAML; use a Drive link for binary files.`,
-      );
-    }
-
+  for (const { file, role } of getUploadedFilesFromFormData(formData)) {
     created.push(
-      await createAgentFile({
+      await createUploadedAgentFile({
         agentId,
+        file,
+        role,
         workspaceId,
-        name: value.name,
-        role: uploadRole,
-        sourceType: "uploaded_text",
-        originalFileName: value.name,
-        mimeType: value.type || "text/plain",
-        sizeBytes: value.size,
-        contentText: await value.text(),
-        metadata: {
-          addedFrom: "agent_form",
-        },
       }),
     );
   }
 
   return created;
+}
+
+export function getUploadedFilesFromFormData(
+  formData: FormData,
+): ParsedUploadedFile[] {
+  const files: ParsedUploadedFile[] = [];
+  const uploadRole = normalizeRole(
+    formText(formData, "uploadedFileRole", "input_data"),
+  );
+
+  for (const value of formData.getAll("agentFiles")) {
+    if (!isUsableFile(value)) {
+      continue;
+    }
+
+    files.push({ file: value, role: uploadRole });
+  }
+
+  for (const role of AGENT_FILE_ROLES) {
+    for (const value of formData.getAll(`agentFiles:${role}`)) {
+      if (!isUsableFile(value)) {
+        continue;
+      }
+
+      files.push({ file: value, role });
+    }
+  }
+
+  return files;
 }
 
 export function buildAgentFilesPromptSection(

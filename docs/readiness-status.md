@@ -75,7 +75,7 @@ The run evidence proves:
 - Dedicated `/sign-in` and `/sign-up` routes, with the signed-out app entry linking to those routes and returning users to `/app`.
 - Agent creation with natural-language prompts.
 - Starter briefs on the new-agent page for common Summon workflows such as report decks, budget pacing, data cleanup, and client research.
-- Multiple reference links and multi-file uploads for small text/code/data files.
+- Multiple reference links and role-grouped multi-file uploads for small text/code/data files, so one agent can receive CSV input data, Python helper code, templates, and references in the same submission.
 - Manual runs and scheduled runs.
 - Postgres-backed worker execution through Railway.
 - Notion and Google Drive memory reads.

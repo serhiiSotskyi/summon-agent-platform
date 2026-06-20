@@ -171,9 +171,14 @@ export default async function HelpPage({
           <CardContent>
             <div className="space-y-3 text-sm leading-6 text-zinc-300">
               <p>
-                Use multiple file upload for small CSV, Python, TXT, Markdown, JSON, and YAML files.
-                Use reference links for large Google Slides, Sheets, Docs, Drive folders, Notion pages,
-                and Looker Studio reports.
+                Use the role-grouped upload boxes for small CSV, Python, TXT,
+                Markdown, JSON, and YAML files. For example, put exported
+                CSVs under <span className="font-medium text-white">Input data</span>{" "}
+                and Python helpers under{" "}
+                <span className="font-medium text-white">Helper code</span> in
+                the same submission. Use reference links for large Google
+                Slides, Sheets, Docs, Drive folders, Notion pages, and Looker
+                Studio reports.
               </p>
               <p>
                 Give each reference a role such as <span className="font-medium text-white">Template</span>,{" "}

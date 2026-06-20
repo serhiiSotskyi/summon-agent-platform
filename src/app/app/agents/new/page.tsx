@@ -1,4 +1,5 @@
 import { Bot, FileUp, Link2, Rocket, ShieldCheck } from "lucide-react";
+import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { AgentStarterBriefs } from "@/components/app/agent-starter-briefs";
 import { PageHeader } from "@/components/app/page-header";
@@ -99,37 +100,7 @@ export default async function NewAgentPage({
                 </p>
               </div>
               <AgentReferenceFields idPrefix="new-reference" />
-              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
-                <div className="space-y-2">
-                  <Label htmlFor="agentFiles">Upload small text files</Label>
-                  <Input
-                    id="agentFiles"
-                    multiple
-                    name="agentFiles"
-                    type="file"
-                    accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
-                  />
-                  <p className="text-xs leading-5 text-zinc-500">
-                    Select multiple files at once with Cmd-click or
-                    Shift-click. CSV, Python, TXT, Markdown, JSON, or YAML up
-                    to 1 MB each.
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="uploadedFileRole">Upload role</Label>
-                  <Select
-                    id="uploadedFileRole"
-                    name="uploadedFileRole"
-                    defaultValue="input_data"
-                  >
-                    <option value="input_data">Input data</option>
-                    <option value="helper_code">Helper code</option>
-                    <option value="template">Template</option>
-                    <option value="reference">Reference</option>
-                    <option value="other">Other</option>
-                  </Select>
-                </div>
-              </div>
+              <AgentFileUploadFields idPrefix="new-agent-files" />
             </div>
             <div className="space-y-3 rounded-md border border-white/10 bg-black/20 p-4">
               <div>

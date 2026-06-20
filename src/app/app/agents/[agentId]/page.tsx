@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
@@ -19,7 +20,6 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input, Label, Select } from "@/components/ui/form";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { demoAgents } from "@/lib/app/demo";
@@ -326,36 +326,7 @@ export default async function AgentDetailPage({
                     </p>
                   </div>
                   <AgentReferenceFields idPrefix="detail-reference" />
-                  <div className="grid gap-4 md:grid-cols-[1fr_170px]">
-                    <div className="space-y-2">
-                      <Label htmlFor="detailAgentFiles">Upload files</Label>
-                      <Input
-                        id="detailAgentFiles"
-                        multiple
-                        name="agentFiles"
-                        type="file"
-                        accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
-                      />
-                      <p className="text-xs leading-5 text-zinc-500">
-                        Select multiple files at once with Cmd-click or
-                        Shift-click.
-                      </p>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="detailUploadedFileRole">Upload role</Label>
-                      <Select
-                        id="detailUploadedFileRole"
-                        name="uploadedFileRole"
-                        defaultValue="input_data"
-                      >
-                        <option value="input_data">Input data</option>
-                        <option value="helper_code">Helper code</option>
-                        <option value="template">Template</option>
-                        <option value="reference">Reference</option>
-                        <option value="other">Other</option>
-                      </Select>
-                    </div>
-                  </div>
+                  <AgentFileUploadFields idPrefix="detail-agent-files" />
                   <Button type="submit" variant="secondary">
                     <FileUp aria-hidden />
                     Add to agent

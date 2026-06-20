@@ -7,6 +7,7 @@ import {
   withAgentSchedulerId,
 } from "../src/lib/agents/schedules";
 import { SUMMON_MEMORY_SYSTEM_INSTRUCTION } from "../src/lib/agents/defaults";
+import { getUploadedFilesFromFormData } from "../src/lib/agents/files";
 import { estimateLlmCost, getPricingMetadata } from "../src/lib/llm/pricing";
 
 function testSchedules() {
@@ -90,8 +91,42 @@ function testMemoryInstruction() {
   assert.match(instruction, /approval/);
 }
 
+function testRoleGroupedUploads() {
+  const formData = new FormData();
+  formData.append(
+    "agentFiles:input_data",
+    new File(["campaign,spend\nBrand,120"], "report.csv", {
+      type: "text/csv",
+    }),
+  );
+  formData.append(
+    "agentFiles:helper_code",
+    new File(["print('ok')"], "metrics.py", {
+      type: "text/x-python",
+    }),
+  );
+  formData.append(
+    "agentFiles:reference",
+    new File(["notes"], "brief.md", {
+      type: "text/markdown",
+    }),
+  );
+
+  const files = getUploadedFilesFromFormData(formData);
+
+  assert.deepEqual(
+    files.map((file) => [file.file.name, file.role]),
+    [
+      ["report.csv", "input_data"],
+      ["metrics.py", "helper_code"],
+      ["brief.md", "reference"],
+    ],
+  );
+}
+
 testSchedules();
 testPricing();
 testMemoryInstruction();
+testRoleGroupedUploads();
 
 console.log("platform smoke tests passed");
