@@ -121,6 +121,15 @@ function redirectToWorkspaces(
   redirect(`/app/workspaces?${searchParams.toString()}`);
 }
 
+function inviteDeliveryFailureParams(deliveryStatus: {
+  reason?: string;
+  sent: boolean;
+}): Record<string, string> {
+  return deliveryStatus.sent || !deliveryStatus.reason
+    ? {}
+    : { inviteReason: deliveryStatus.reason };
+}
+
 export async function createSharedWorkspace(formData: FormData) {
   const context = await requireContext();
   const name = getText(formData, "name", "Summon shared workspace");
@@ -211,7 +220,11 @@ export async function inviteWorkspaceMember(formData: FormData) {
     context.workspace.id,
     invitation.deliveryStatus.sent
       ? { inviteStatus: "sent" }
-      : { inviteLink: invitation.inviteUrl, inviteStatus: "manual" },
+      : {
+          inviteLink: invitation.inviteUrl,
+          inviteStatus: "manual",
+          ...inviteDeliveryFailureParams(invitation.deliveryStatus),
+        },
   );
 }
 
@@ -251,6 +264,7 @@ export async function resendWorkspaceInvitation(formData: FormData) {
       : {
           inviteLink: refreshedInvitation.inviteUrl,
           inviteStatus: "manual",
+          ...inviteDeliveryFailureParams(refreshedInvitation.deliveryStatus),
         },
   );
 }

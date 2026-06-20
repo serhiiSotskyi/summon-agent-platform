@@ -26,14 +26,14 @@ import {
 type SearchParams = Promise<{
   inviteError?: string;
   inviteLink?: string;
+  inviteReason?: string;
   inviteStatus?: string;
   workspace?: string;
 }>;
 
 const inviteStatusMessages: Record<string, string> = {
   added: "Member added to this workspace.",
-  manual:
-    "Invitation created. Email delivery is not configured yet, so send the invite link manually.",
+  manual: "Invitation created. Send the invite link manually.",
   resent: "Invitation email sent again.",
   revoked: "Invitation revoked.",
   sent: "Invitation email sent.",
@@ -49,6 +49,37 @@ const inviteErrorMessages: Record<string, string> = {
   self: "You are already a member of this workspace.",
   "shared-required": "Create or select a shared workspace before inviting members.",
 };
+
+type StoredInviteDeliveryStatus = {
+  provider?: string;
+  reason?: string;
+  sent?: boolean;
+};
+
+function inviteDeliveryStatus(value: unknown): StoredInviteDeliveryStatus | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as StoredInviteDeliveryStatus;
+}
+
+function inviteDeliveryNote(value: unknown) {
+  const deliveryStatus = inviteDeliveryStatus(value);
+  if (!deliveryStatus) {
+    return "Not sent yet.";
+  }
+
+  if (deliveryStatus.sent) {
+    return deliveryStatus.provider === "resend"
+      ? "Email sent by Resend."
+      : "Invite delivered.";
+  }
+
+  return deliveryStatus.reason
+    ? `Email not sent: ${deliveryStatus.reason}`
+    : "Email not sent. Manual link available.";
+}
 
 export default async function WorkspacesPage({
   searchParams,
@@ -88,6 +119,7 @@ export default async function WorkspacesPage({
     ? inviteErrorMessages[params.inviteError]
     : undefined;
   const inviteLink = params.inviteLink;
+  const inviteReason = params.inviteReason;
 
   return (
     <>
@@ -99,6 +131,11 @@ export default async function WorkspacesPage({
       {inviteStatus ? (
         <Alert className="mb-5 border-emerald-300/20 bg-emerald-300/10 text-emerald-50/90">
           {inviteStatus}
+          {inviteReason ? (
+            <p className="mt-2 text-sm leading-6 text-emerald-50/80">
+              Delivery status: {inviteReason}
+            </p>
+          ) : null}
           {inviteLink ? (
             <div className="mt-3 space-y-2">
               <div className="text-xs uppercase tracking-[0.18em] text-emerald-100/70">
@@ -201,6 +238,9 @@ export default async function WorkspacesPage({
                       </TD>
                       <TD>
                         <StatusBadge status="INVITED" />
+                        <p className="mt-2 max-w-[34rem] text-xs leading-5 text-zinc-500">
+                          {inviteDeliveryNote(invitation.deliveryStatus)}
+                        </p>
                       </TD>
                       <TD>
                         {canInvite ? (

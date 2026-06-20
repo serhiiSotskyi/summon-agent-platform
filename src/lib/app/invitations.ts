@@ -105,10 +105,23 @@ async function sendInviteEmail({
   });
 
   if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | { message?: unknown; name?: unknown }
+      | null;
+    const providerMessage =
+      typeof payload?.message === "string" ? payload.message : null;
+    const providerName =
+      typeof payload?.name === "string" ? payload.name : null;
+    const reason = [providerMessage, providerName ? `(${providerName})` : null]
+      .filter(Boolean)
+      .join(" ");
+
     return {
       sent: false,
       provider: "resend",
-      reason: `Resend returned ${response.status}.`,
+      reason: reason
+        ? `Resend returned ${response.status}: ${reason}`
+        : `Resend returned ${response.status}.`,
     };
   }
 
