@@ -944,10 +944,9 @@ export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
         disabledActionHref: googleCloudApiHref("slides.googleapis.com"),
       },
     ];
-    const capabilities: GoogleWorkspaceCapability[] = [];
-    for (const probe of probes) {
-      capabilities.push(await probeGoogleApi(probe));
-    }
+    const capabilities = await Promise.all(
+      probes.map((probe) => probeGoogleApi(probe)),
+    );
 
     const status: GoogleWorkspaceCapabilityStatus = capabilities.some(
       (capability) => capability.status === "ERROR",
