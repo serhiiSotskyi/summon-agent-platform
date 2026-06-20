@@ -1496,6 +1496,26 @@ function pushGenericTextElementUpdate(
   requests.push(...genericUpdateTextElementRequests(objectId, trimmedText));
 }
 
+function pushGenericDeleteObjectRequest(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  objectId: string,
+) {
+  if (!objectId) {
+    return;
+  }
+  const key = `delete\u0000${objectId}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  requests.push({
+    deleteObject: {
+      objectId,
+    },
+  });
+}
+
 function staleTermRegex(term: string) {
   const normalized = term.trim().toLowerCase();
   if (!normalized) {
@@ -1674,6 +1694,26 @@ function shouldPreservePlaceholderElement(text: string, slideTitle: string) {
   return false;
 }
 
+function tableCellsForSlide(slide: Record<string, unknown>) {
+  return asObjectArray(slide.pageElements).flatMap((element) => {
+    const table = asRecord(element.table);
+    return asObjectArray(table.cells).map((cell) => asString(cell.text));
+  });
+}
+
+function hasSubstantiveTableContent(slide: Record<string, unknown>) {
+  return tableCellsForSlide(slide).some((text) => {
+    const normalized = text.trim();
+    return Boolean(
+      normalized &&
+        normalized !== "—" &&
+        !slideLooksLikePlaceholder(normalized) &&
+        !/^q[1-4]\s+\d{4}/i.test(normalized) &&
+        !/summon digital|confidential|prepared by summon/i.test(normalized),
+    );
+  });
+}
+
 function genericReportDeckBatchRequests(results: unknown[]) {
   const reportData = metricArtifactJson(results);
   const metadata = reportMetadataFromArtifact(reportData);
@@ -1704,6 +1744,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
 
     const textElements = asObjectArray(slide.textElements);
+    const pageElements = asObjectArray(slide.pageElements);
     const slideText = textElements.map((element) => asString(element.text)).join(" ");
     const slideTitle = asString(slide.titleCandidate);
     const containsStaleTerm = staleTerms.some((term) => staleTermMatches(slideText, term));
@@ -1757,6 +1798,14 @@ function genericReportDeckBatchRequests(results: unknown[]) {
           index === 0 ? placeholderText : "—",
         );
       });
+
+      pageElements
+        .filter((element) => ["table", "sheets_chart"].includes(asString(element.type)))
+        .map((element) => asString(element.objectId))
+        .filter(Boolean)
+        .forEach((objectId) => {
+          pushGenericDeleteObjectRequest(placeholderRequests, seen, objectId);
+        });
 
       for (const term of staleTerms) {
         if (!staleTermMatches(slideText, term)) {
@@ -1886,7 +1935,7 @@ function staleTermsForTarget(input: {
   const terms: string[] = [];
 
   if (market.includes("australia") || /\bau\b/.test(market)) {
-    terms.push("Wendy Wu Tours UK", "WWT UK", "United Kingdom", " UK ");
+    terms.push("Wendy Wu Tours UK", "WWT UK", "United Kingdom", " UK ", ".co.uk");
   }
   if (market.includes("uk") || market.includes("united kingdom")) {
     terms.push("Australia", " AU ");
@@ -1969,6 +2018,9 @@ async function auditGoogleSlidesDeck(input: {
     }
     if (slideLooksLikePlaceholder(text)) {
       reasons.push("Marked as placeholder or human-review content.");
+      if (hasSubstantiveTableContent(slide)) {
+        reasons.push("Placeholder slide still contains substantive copied table content.");
+      }
     }
 
     const hasBlockingReason = reasons.some(
