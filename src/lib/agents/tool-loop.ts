@@ -1846,6 +1846,11 @@ function isHeaderOrFooterTextBox(element: Record<string, unknown>) {
   return box.translateY < 1_050_000 || box.translateY > SLIDE_HEIGHT_EMU - 760_000;
 }
 
+function isHeaderTextBox(element: Record<string, unknown>) {
+  const box = textElementBox(element);
+  return Boolean(box && box.translateY < 1_050_000);
+}
+
 function estimatedRenderedLineCount(text: string, boxWidthEmu: number) {
   const widthInches = Math.max(0.75, boxWidthEmu / EMU_PER_INCH);
   const charsPerLine = Math.max(12, Math.floor(widthInches * 15));
@@ -2239,6 +2244,16 @@ function visualPlaceholderTextForSlide(
 }
 
 function metricKeyForLabelText(value: string) {
+  const trimmed = value.trim();
+  if (
+    trimmed.length > 52 ||
+    trimmed.includes("\n") ||
+    /[.!?]/.test(trimmed) ||
+    trimmed.split(/\s+/).length > 5
+  ) {
+    return "";
+  }
+
   const normalized = normalizedReportLabel(value);
   if (!normalized) {
     return "";
@@ -2684,6 +2699,29 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
       const placeholderText = placeholderTextForSlide(reportData, slideText, auditReasons);
+      textElements
+        .filter((element) => asString(element.source) === "shape")
+        .map((element) => ({
+          objectId: asString(element.objectId),
+          text: asString(element.text),
+          size: element.size,
+          transform: element.transform,
+        }))
+        .filter(
+          (element) =>
+            element.objectId &&
+            !isRunGeneratedSlidesElement(element.objectId) &&
+            isHeaderTextBox(asRecord(element)) &&
+            slideLooksLikePlaceholder(element.text),
+        )
+        .forEach((element) => {
+          pushGenericTextElementUpdate(
+            placeholderRequests,
+            seen,
+            element.objectId,
+            "Review required",
+          );
+        });
       const shapeElements = textElements
         .filter((element) => asString(element.source) === "shape")
         .map((element) => ({
