@@ -28,6 +28,13 @@ const UPLOAD_GROUPS = [
   },
 ] as const;
 
+const REPORT_AGENT_INPUTS = [
+  "Source exports: current-period CSVs, Sheets, or Docs with the numbers to calculate from.",
+  "Template/reference: the deck, doc, sheet, or example output the agent should copy or follow.",
+  "Calculation logic: helper Python or formula notes when the metrics are not obvious.",
+  "Decision context: planning notes, comparator data, client updates, and placeholders for anything missing.",
+] as const;
+
 export function AgentFileUploadFields({ idPrefix }: { idPrefix: string }) {
   return (
     <div className="space-y-3">
@@ -72,6 +79,18 @@ export function AgentFileUploadFields({ idPrefix }: { idPrefix: string }) {
             </div>
           );
         })}
+      </div>
+      <div className="rounded-md border border-amber-300/20 bg-amber-300/[0.06] p-3">
+        <p className="text-sm font-medium text-amber-100">
+          Report or deck agents need enough source material
+        </p>
+        <div className="mt-2 grid gap-2 md:grid-cols-2">
+          {REPORT_AGENT_INPUTS.map((item) => (
+            <div className="rounded border border-white/10 bg-black/20 p-2 text-xs leading-5 text-zinc-300" key={item}>
+              {item}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
