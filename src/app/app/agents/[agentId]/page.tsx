@@ -14,6 +14,7 @@ import { notFound } from "next/navigation";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
+import { RunEvidenceCounts } from "@/components/app/run-evidence-counts";
 import { StatusBadge } from "@/components/app/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,6 +72,9 @@ export default async function AgentDetailPage({
           runs: {
             orderBy: { triggeredAt: "desc" },
             take: 10,
+            include: {
+              _count: { select: { artifacts: true, toolCalls: true } },
+            },
           },
           createdBy: {
             select: { name: true, email: true },
@@ -373,6 +377,7 @@ export default async function AgentDetailPage({
                   <TR>
                     <TH>Status</TH>
                     <TH>Started</TH>
+                    <TH>Evidence</TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -387,6 +392,12 @@ export default async function AgentDetailPage({
                         </Link>
                       </TD>
                       <TD>{formatRelativeTime(run.triggeredAt)}</TD>
+                      <TD>
+                        <RunEvidenceCounts
+                          artifacts={run._count.artifacts}
+                          toolCalls={run._count.toolCalls}
+                        />
+                      </TD>
                     </TR>
                   ))}
                 </TBody>

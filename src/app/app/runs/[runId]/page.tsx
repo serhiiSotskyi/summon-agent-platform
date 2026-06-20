@@ -75,6 +75,30 @@ function readOutputMode(output: Prisma.JsonValue) {
 
 type OutputRecord = Record<string, unknown>;
 
+type DbArtifactRecord = {
+  id: string;
+  artifactType: string;
+  name: string;
+  location: string | null;
+  mimeType: string | null;
+  payload: Prisma.JsonValue | null;
+  createdAt: Date;
+};
+
+type DbToolCallRecord = {
+  id: string;
+  connectorType: string;
+  toolName: string;
+  status: string;
+  request: Prisma.JsonValue | null;
+  response: Prisma.JsonValue | null;
+  error: string | null;
+  durationMs: number | null;
+  metadata: Prisma.JsonValue | null;
+  loggedAt: Date;
+  artifacts: DbArtifactRecord[];
+};
+
 function toRecord(value: unknown): value is OutputRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -145,6 +169,7 @@ function readToolCalls(output: Prisma.JsonValue) {
         name: entry,
         summary: null,
         status: "completed",
+        durationMs: null,
       };
     }
 
@@ -170,6 +195,29 @@ function readToolCalls(output: Prisma.JsonValue) {
       summary: firstText(entry, ["summary", "description", "details", "output"]),
       args: entry.args ?? entry.input ?? entry.parameters,
       result: entry.result,
+      durationMs: typeof entry.durationMs === "number" ? entry.durationMs : null,
+    };
+  });
+}
+
+function readDbToolCalls(toolCalls: DbToolCallRecord[]) {
+  return toolCalls.map((toolCall) => {
+    const response = toRecord(toolCall.response) ? toolCall.response : {};
+    const metadata = toRecord(toolCall.metadata) ? toolCall.metadata : {};
+
+    return {
+      id: toolCall.id,
+      name: toolCall.toolName,
+      connector: toolCall.connectorType,
+      status: toolCall.status,
+      summary:
+        toolCall.error ??
+        firstText(response, ["summary", "message", "description", "details"]) ??
+        firstText(metadata, ["reason"]),
+      args: toolCall.request,
+      result: toolCall.response ?? (toolCall.error ? { error: toolCall.error } : null),
+      durationMs: toolCall.durationMs,
+      artifactCount: toolCall.artifacts.length,
     };
   });
 }
@@ -245,6 +293,49 @@ function readArtifacts(output: Prisma.JsonValue) {
         ]),
       ),
       raw: JSON.stringify(entry),
+    };
+  });
+}
+
+function readDbArtifacts(artifacts: DbArtifactRecord[]) {
+  return artifacts.map((artifact, index) => {
+    const payload = toRecord(artifact.payload) ? artifact.payload : {};
+    const locationUrl = publicArtifactUrl(artifact.location);
+    const payloadUrl = publicArtifactUrl(
+      firstText(payload, [
+        "url",
+        "link",
+        "viewUrl",
+        "webViewLink",
+        "downloadUrl",
+        "fileUrl",
+        "location",
+      ]),
+    );
+
+    return {
+      id: artifact.id || `artifact-${index}`,
+      label: artifact.name || `Artifact ${index + 1}`,
+      title:
+        firstText(payload, ["title", "name", "label", "fileName", "filename"]) ||
+        artifact.name ||
+        `Artifact ${index + 1}`,
+      type:
+        artifact.mimeType ||
+        firstText(payload, ["type", "mimeType", "contentType"]) ||
+        artifact.artifactType,
+      status: firstText(payload, ["status", "state"]) || "ready",
+      summary: firstText(payload, ["summary", "description", "notes", "text"]),
+      url: locationUrl ?? payloadUrl,
+      raw: JSON.stringify(
+        {
+          artifactType: artifact.artifactType,
+          location: artifact.location,
+          payload: artifact.payload,
+        },
+        null,
+        2,
+      ),
     };
   });
 }
@@ -424,6 +515,17 @@ export default async function RunDetailPage({
       agent: true,
       triggeredBy: { select: { name: true, email: true } },
       approvalRequests: true,
+      toolCalls: {
+        orderBy: { loggedAt: "asc" },
+        include: {
+          artifacts: {
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      },
+      artifacts: {
+        orderBy: { createdAt: "asc" },
+      },
     },
   });
 
@@ -437,8 +539,10 @@ export default async function RunDetailPage({
   const missingTools = readMissingTools(run.output);
   const approvalDecision = readApprovalDecision(run.output);
   const costMetadata = readCostMetadata(run.output);
-  const toolCalls = readToolCalls(run.output);
-  const artifacts = readArtifacts(run.output);
+  const dbToolCalls = readDbToolCalls(run.toolCalls);
+  const dbArtifacts = readDbArtifacts(run.artifacts);
+  const toolCalls = dbToolCalls.length > 0 ? dbToolCalls : readToolCalls(run.output);
+  const artifacts = dbArtifacts.length > 0 ? dbArtifacts : readArtifacts(run.output);
   const runCaveats = readRunCaveats(run.output);
   const isActiveRun = run.status === "QUEUED" || run.status === "RUNNING";
 
@@ -737,6 +841,24 @@ export default async function RunDetailPage({
                       {toolCall.connector ? (
                         <p>
                           Connector: <span className="text-zinc-200">{toolCall.connector}</span>
+                        </p>
+                      ) : null}
+                      {typeof toolCall.durationMs === "number" ? (
+                        <p>
+                          Duration:{" "}
+                          <span className="text-zinc-200">
+                            {toolCall.durationMs}ms
+                          </span>
+                        </p>
+                      ) : null}
+                      {"artifactCount" in toolCall &&
+                      typeof toolCall.artifactCount === "number" &&
+                      toolCall.artifactCount > 0 ? (
+                        <p>
+                          Artifacts:{" "}
+                          <span className="text-zinc-200">
+                            {toolCall.artifactCount}
+                          </span>
                         </p>
                       ) : null}
                       {toolCall.summary ? <p>{toolCall.summary}</p> : null}

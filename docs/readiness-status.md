@@ -80,7 +80,7 @@ The run evidence proves:
 - Notion and Google Drive memory reads.
 - Python sandbox execution.
 - Run-owned Google Drive/Slides/Docs/Sheets artifact workflows where APIs are enabled and available.
-- Tool-call logs, artifacts, run output, duration, token usage, and estimated cost.
+- Tool-call logs, artifacts, run output, duration, token usage, and estimated cost. Run lists show tool/artifact counts, and run detail reads the authoritative `ToolCall` and `AgentArtifact` tables first, with legacy run-output JSON as fallback.
 - Approval queue display and approved-action job execution.
 - In-app Help page at `/app/help`.
 - Project operator README with local/dev/deploy commands.

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/app/empty-state";
 import { MetricCard } from "@/components/app/metric-card";
 import { PageHeader } from "@/components/app/page-header";
+import { RunEvidenceCounts } from "@/components/app/run-evidence-counts";
 import { SetupChecklist } from "@/components/app/setup-checklist";
 import { StatusBadge } from "@/components/app/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -100,6 +101,7 @@ export default async function AppDashboard({
                     <TH>Agent</TH>
                     <TH>Status</TH>
                     <TH>Trigger</TH>
+                    <TH>Evidence</TH>
                     <TH>Started</TH>
                   </TR>
                 </THead>
@@ -111,6 +113,12 @@ export default async function AppDashboard({
                         <StatusBadge status={run.status} />
                       </TD>
                       <TD>{run.triggerType.toLowerCase()}</TD>
+                      <TD>
+                        <RunEvidenceCounts
+                          artifacts={run.artifacts}
+                          toolCalls={run.toolCalls}
+                        />
+                      </TD>
                       <TD>{formatRelativeTime(run.triggeredAt)}</TD>
                     </TR>
                   ))}

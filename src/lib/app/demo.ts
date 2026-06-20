@@ -17,6 +17,8 @@ export const demoDashboard = {
       triggerType: "SCHEDULED",
       triggeredAt: new Date(Date.now() - 1000 * 60 * 18),
       summary: "Spend stable; two campaigns need budget review.",
+      artifacts: 3,
+      toolCalls: 6,
     },
     {
       id: "demo-run-2",
@@ -25,6 +27,8 @@ export const demoDashboard = {
       triggerType: "MANUAL",
       triggeredAt: new Date(Date.now() - 1000 * 60 * 4),
       summary: "Waiting for connector approval.",
+      artifacts: 0,
+      toolCalls: 1,
     },
   ],
   approvals: [

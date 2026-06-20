@@ -45,6 +45,12 @@ export async function getWorkspaceDashboard(workspaceId: string) {
             name: true,
           },
         },
+        _count: {
+          select: {
+            artifacts: true,
+            toolCalls: true,
+          },
+        },
       },
       orderBy: { triggeredAt: "desc" },
       take: 5,
@@ -130,6 +136,8 @@ export async function getWorkspaceDashboard(workspaceId: string) {
       triggerType: run.triggerType,
       triggeredAt: run.triggeredAt,
       summary: run.summary,
+      artifacts: run._count.artifacts,
+      toolCalls: run._count.toolCalls,
     })),
     approvals: approvals.map((approval) => ({
       id: approval.id,

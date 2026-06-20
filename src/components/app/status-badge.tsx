@@ -5,6 +5,7 @@ export function StatusBadge({ status }: { status: string }) {
   const variant =
     normalized.includes("active") ||
     normalized.includes("success") ||
+    normalized.includes("succeeded") ||
     normalized.includes("approved")
       ? "success"
       : normalized.includes("pending") ||

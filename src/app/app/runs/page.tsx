@@ -2,6 +2,7 @@ import { History } from "lucide-react";
 import Link from "next/link";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
+import { RunEvidenceCounts } from "@/components/app/run-evidence-counts";
 import { StatusBadge } from "@/components/app/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
@@ -28,6 +29,7 @@ export default async function RunsPage({
     include: {
       agent: { select: { name: true } },
       triggeredBy: { select: { name: true, email: true } },
+      _count: { select: { artifacts: true, toolCalls: true } },
     },
     orderBy: { triggeredAt: "desc" },
     take: 50,
@@ -53,6 +55,7 @@ export default async function RunsPage({
                   <TH>Status</TH>
                   <TH>Trigger</TH>
                   <TH>Started</TH>
+                  <TH>Evidence</TH>
                   <TH>Cost</TH>
                   <TH>By</TH>
                 </TR>
@@ -73,6 +76,12 @@ export default async function RunsPage({
                     </TD>
                     <TD>{run.triggerType.toLowerCase()}</TD>
                     <TD>{formatRelativeTime(run.triggeredAt)}</TD>
+                    <TD>
+                      <RunEvidenceCounts
+                        artifacts={run._count.artifacts}
+                        toolCalls={run._count.toolCalls}
+                      />
+                    </TD>
                     <TD>
                       {run.costEstimate ? formatUsd(run.costEstimate.toNumber()) : "Unknown"}
                     </TD>
