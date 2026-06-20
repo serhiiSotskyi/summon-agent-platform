@@ -1312,16 +1312,7 @@ function reportMetricValuesForSlide(input: {
   slideTitle: string;
   compactCost?: boolean;
 }) {
-  const segment = slideSegmentForReportData(input.reportData, input.slideText, input.slideTitle);
-  if (!segment) {
-    return genericReportMetricValues(input.reportData, Boolean(input.compactCost));
-  }
-
-  return reportMetricGroupsForRecord(
-    segment.metrics,
-    input.reportData,
-    Boolean(input.compactCost),
-  )
+  return reportMetricGroupsForSlide(input)
     .filter((group) => ["leads", "cost", "cpl", "cvr", "clicks", "ctr"].includes(group.key))
     .map((group) => group.replacement)
     .filter(Boolean);
@@ -1551,6 +1542,126 @@ function staleTermMatches(text: string, term: string) {
 
 function isLikelyMetricText(value: string) {
   return /^(?:[A-Z]{0,3}\$|£|\$|€)?\s?[\d,.]+(?:K|M)?%?$/i.test(value.trim());
+}
+
+function metricKeyForLabelText(value: string) {
+  const normalized = normalizedReportLabel(value);
+  if (!normalized) {
+    return "";
+  }
+  if (/\bcvr\b|\bconversion rate\b/.test(normalized)) {
+    return "cvr";
+  }
+  if (/\bctr\b|\bclick through rate\b/.test(normalized)) {
+    return "ctr";
+  }
+  if (/\bcpl\b|\bcost per lead\b/.test(normalized)) {
+    return "cpl";
+  }
+  if (/\bcpc\b|\bcost per click\b/.test(normalized)) {
+    return "cpc";
+  }
+  if (/\bclicks?\b/.test(normalized)) {
+    return "clicks";
+  }
+  if (/\bimpressions?\b/.test(normalized)) {
+    return "impressions";
+  }
+  if (/\b(leads?|conversions?)\b/.test(normalized)) {
+    return "leads";
+  }
+  if (/\b(spend|cost|media spend)\b/.test(normalized)) {
+    return "cost";
+  }
+  return "";
+}
+
+function slideShapeTextElements(slide: Record<string, unknown>) {
+  return asObjectArray(slide.textElements)
+    .map((element, index) => ({
+      index,
+      objectId: asString(element.objectId),
+      source: asString(element.source),
+      text: asString(element.text),
+    }))
+    .filter((element) => element.source === "shape" && element.objectId && element.text.trim());
+}
+
+function nearestMetricTextElement(
+  elements: ReturnType<typeof slideShapeTextElements>,
+  labelIndex: number,
+) {
+  const previous = elements
+    .slice(0, labelIndex)
+    .reverse()
+    .find((element) => isLikelyMetricText(element.text));
+  if (previous) {
+    return previous;
+  }
+  return elements
+    .slice(labelIndex + 1)
+    .find((element) => isLikelyMetricText(element.text));
+}
+
+function reportMetricGroupsForSlide(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+  slideTitle: string;
+  compactCost?: boolean;
+}) {
+  const segment = slideSegmentForReportData(input.reportData, input.slideText, input.slideTitle);
+  const record = segment ? segment.metrics : reportOverallKpis(input.reportData);
+  return reportMetricGroupsForRecord(
+    record,
+    input.reportData,
+    Boolean(input.compactCost),
+  ).filter((group) =>
+    ["leads", "cost", "cpl", "cvr", "clicks", "ctr", "impressions", "cpc"].includes(group.key),
+  );
+}
+
+function metricLabelValueIssues(input: {
+  reportData: Record<string, unknown>;
+  slide: Record<string, unknown>;
+  slideText: string;
+  slideTitle: string;
+}) {
+  if (slideLooksLikePlaceholder(input.slideText)) {
+    return [];
+  }
+
+  const metricGroups = new Map(
+    reportMetricGroupsForSlide({
+      reportData: input.reportData,
+      slideText: input.slideText,
+      slideTitle: input.slideTitle,
+      compactCost: true,
+    }).map((group) => [group.key, group]),
+  );
+  if (metricGroups.size === 0) {
+    return [];
+  }
+
+  const elements = slideShapeTextElements(input.slide);
+  const issues: string[] = [];
+  for (const [elementIndex, element] of elements.entries()) {
+    const key = metricKeyForLabelText(element.text);
+    const expected = key ? metricGroups.get(key) : undefined;
+    if (!expected) {
+      continue;
+    }
+    const metricElement = nearestMetricTextElement(elements, elementIndex);
+    if (!metricElement) {
+      continue;
+    }
+    if (!containsAnyVariant(metricElement.text, expected.variants)) {
+      issues.push(
+        `KPI metric label "${element.text.trim()}" is paired with "${metricElement.text.trim()}" instead of ${expected.replacement}.`,
+      );
+    }
+  }
+
+  return issues;
 }
 
 function reportDeckCommentary(reportData: Record<string, unknown>) {
@@ -1863,10 +1974,54 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       pushGenericSlideReplacement(updateRequests, seen, slideObjectId, "Q1 2026", metadata.period);
     }
 
+    const metricGroupsByKey = new Map(
+      reportMetricGroupsForSlide({
+        reportData,
+        slideText,
+        slideTitle,
+        compactCost: true,
+      }).map((group) => [group.key, group]),
+    );
+    const labelAwareMetricTargets = slideShapeTextElements(slide)
+      .map((element, elementIndex, elements) => {
+        const key = metricKeyForLabelText(element.text);
+        const group = key ? metricGroupsByKey.get(key) : undefined;
+        const metricElement = group ? nearestMetricTextElement(elements, elementIndex) : undefined;
+        return group && metricElement
+          ? {
+              objectId: metricElement.objectId,
+              replacement: group.replacement,
+            }
+          : null;
+      })
+      .filter(Boolean);
+    const labelAwareObjectIds = new Set<string>();
+    for (const target of labelAwareMetricTargets) {
+      if (!target || labelAwareObjectIds.has(target.objectId)) {
+        continue;
+      }
+      labelAwareObjectIds.add(target.objectId);
+      pushGenericTextElementUpdate(
+        updateRequests,
+        seen,
+        target.objectId,
+        target.replacement,
+      );
+    }
+
     const metricElements = textElements
       .filter((element) => asString(element.source) !== "table_cell")
-      .map((element) => asString(element.text))
-      .filter((text) => isLikelyMetricText(text) && !/^(?:[A-Z]{0,3}\$|£|\$|€)$/i.test(text.trim()));
+      .map((element) => ({
+        objectId: asString(element.objectId),
+        text: asString(element.text),
+      }))
+      .filter(
+        (element) =>
+          !labelAwareObjectIds.has(element.objectId) &&
+          isLikelyMetricText(element.text) &&
+          !/^(?:[A-Z]{0,3}\$|£|\$|€)$/i.test(element.text.trim()),
+      )
+      .map((element) => element.text);
     metricElements.slice(0, values.length).forEach((find, index) => {
       const replace = values[index];
       if (replace) {
@@ -2010,6 +2165,14 @@ async function auditGoogleSlidesDeck(input: {
         slideTitle: title,
       }),
     );
+    reasons.push(
+      ...metricLabelValueIssues({
+        reportData: input.reportData,
+        slide,
+        slideText: text,
+        slideTitle: title,
+      }),
+    );
     if (
       hasUnsupportedComparatorData(input.reportData) &&
       unsupportedComparatorClaim(text) &&
@@ -2035,7 +2198,9 @@ async function auditGoogleSlidesDeck(input: {
           normalizedReason.includes("segment") ||
           normalizedReason.includes("unsupported") ||
           normalizedReason.includes("malformed") ||
-          normalizedReason.includes("copied table content")
+          normalizedReason.includes("copied table content") ||
+          normalizedReason.includes("kpi") ||
+          normalizedReason.includes("metric")
         );
       },
     );
