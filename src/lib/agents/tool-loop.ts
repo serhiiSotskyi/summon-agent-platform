@@ -1898,7 +1898,7 @@ function pushGenericTrendChartRequests(
   const top = box.translateY;
   const width = box.width;
   const height = box.height;
-  const titleHeight = Math.max(210_000, Math.min(300_000, height * 0.18));
+  const titleHeight = Math.max(260_000, Math.min(360_000, height * 0.22));
   const labelWidth = Math.max(560_000, Math.min(700_000, width * 0.22));
   const valueWidth = Math.max(700_000, Math.min(980_000, width * 0.26));
   const gutter = Math.max(70_000, Math.min(120_000, width * 0.035));
@@ -1913,7 +1913,7 @@ function pushGenericTrendChartRequests(
     y: top,
     width,
     height: titleHeight,
-    text: `Monthly ${chartMetricLabel(metricKey)} (generated from uploaded data)`,
+    text: `Monthly ${chartMetricLabel(metricKey)}\nGenerated from uploaded data`,
     fontSizePt: 10,
     bold: true,
   });
