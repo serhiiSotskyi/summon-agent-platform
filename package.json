@@ -8,6 +8,7 @@
     "build": "node scripts/run-with-system-node.mjs next build --webpack",
     "start": "node scripts/run-with-system-node.mjs next start",
     "lint": "eslint",
+    "test:smoke": "node scripts/run-with-system-node.mjs tsx scripts/platform-smoke-tests.ts",
     "db:generate": "node scripts/run-with-system-node.mjs prisma generate",
     "db:migrate": "node scripts/run-with-system-node.mjs prisma migrate dev",
     "db:studio": "node scripts/run-with-system-node.mjs prisma studio",

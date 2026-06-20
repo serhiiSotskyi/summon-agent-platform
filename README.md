@@ -93,6 +93,7 @@ Run these before deploying code changes:
 npx prisma validate
 npm run db:generate
 npm run lint
+npm run test:smoke
 npx tsc --noEmit
 npm run build
 ```
