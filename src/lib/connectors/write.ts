@@ -798,6 +798,7 @@ type GoogleWorkspaceCapability = {
   status: GoogleWorkspaceCapabilityStatus;
   message: string;
   action?: string;
+  actionHref?: string;
 };
 
 async function probeGoogleApi(input: {
@@ -807,9 +808,10 @@ async function probeGoogleApi(input: {
   url: string;
   readyMessage: string;
   disabledAction: string;
+  disabledActionHref?: string;
 }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6_000);
+  const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
     const response = await fetch(input.url, {
       headers: { Authorization: `Bearer ${input.accessToken}` },
@@ -834,6 +836,7 @@ async function probeGoogleApi(input: {
         status: "DEGRADED",
         message,
         action: input.disabledAction,
+        actionHref: input.disabledActionHref,
       } satisfies GoogleWorkspaceCapability;
     }
 
@@ -845,18 +848,23 @@ async function probeGoogleApi(input: {
       action: "Reconnect Google Drive or check the Google Cloud OAuth/API configuration.",
     } satisfies GoogleWorkspaceCapability;
   } catch (error) {
-    const cause =
+    const causeCode =
       error instanceof Error &&
       "cause" in error &&
       error.cause &&
       typeof error.cause === "object" &&
       "code" in error.cause &&
       typeof error.cause.code === "string"
-        ? ` (${error.cause.code})`
-        : "";
+        ? error.cause.code
+        : null;
+    const isTimeout =
+      (error instanceof Error && error.name === "AbortError") ||
+      causeCode === "UND_ERR_CONNECT_TIMEOUT";
+    const cause =
+      causeCode ? ` (${causeCode})` : "";
     const message =
       error instanceof Error && error.name === "AbortError"
-        ? `${input.name} capability probe timed out.`
+        ? `${input.name} capability probe timed out after 15 seconds.`
         : error instanceof Error
           ? `${error.message}${cause}`
           : String(error);
@@ -864,10 +872,13 @@ async function probeGoogleApi(input: {
     return {
       key: input.key,
       name: input.name,
-      status: "ERROR",
+      status: isTimeout ? "DEGRADED" : "ERROR",
       message,
       action:
-        "Retry the health check. If it persists, verify provider API access from Vercel/Railway and the Google Cloud API configuration.",
+        isTimeout
+          ? "Retry the health check. If this stays degraded, verify network access and confirm the API is enabled in Google Cloud."
+          : "Reconnect Google Drive or check the Google Cloud OAuth/API configuration.",
+      actionHref: input.disabledActionHref,
     } satisfies GoogleWorkspaceCapability;
   } finally {
     clearTimeout(timeout);
@@ -878,47 +889,59 @@ export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
   try {
     const { accessToken } = await googleCredentialAndToken(workspaceId);
     const fakeId = "summon-diagnostic-probe-does-not-exist";
-    const capabilities = await Promise.all([
-      probeGoogleApi({
+    const probes = [
+      {
         accessToken,
-        key: "drive",
+        key: "drive" as const,
         name: "Google Drive API",
         url: "https://www.googleapis.com/drive/v3/about?fields=user",
         readyMessage: "Drive API is reachable for file search, copy, upload, and metadata.",
         disabledAction:
           "Enable the Google Drive API in the Google Cloud project used by this OAuth client.",
-      }),
-      probeGoogleApi({
+        disabledActionHref:
+          "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=916083481034",
+      },
+      {
         accessToken,
-        key: "docs",
+        key: "docs" as const,
         name: "Google Docs API",
         url: `https://docs.googleapis.com/v1/documents/${encodeURIComponent(fakeId)}?fields=documentId`,
         readyMessage:
           "Docs API is reachable. The test document was intentionally fake, so this proves API availability without mutating files.",
         disabledAction:
           "Enable the Google Docs API in the Google Cloud project used by this OAuth client.",
-      }),
-      probeGoogleApi({
+        disabledActionHref:
+          "https://console.developers.google.com/apis/api/docs.googleapis.com/overview?project=916083481034",
+      },
+      {
         accessToken,
-        key: "sheets",
+        key: "sheets" as const,
         name: "Google Sheets API",
         url: `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(fakeId)}?fields=spreadsheetId`,
         readyMessage:
           "Sheets API is reachable. Native ranges, formulas, formatting, and chart operations can be used when tools support them.",
         disabledAction:
           "Enable the Google Sheets API in the Google Cloud project used by this OAuth client. Until then, agents use Drive CSV fallback for simple run-owned sheets.",
-      }),
-      probeGoogleApi({
+        disabledActionHref:
+          "https://console.developers.google.com/apis/api/sheets.googleapis.com/overview?project=916083481034",
+      },
+      {
         accessToken,
-        key: "slides",
+        key: "slides" as const,
         name: "Google Slides API",
         url: `https://slides.googleapis.com/v1/presentations/${encodeURIComponent(fakeId)}?fields=presentationId`,
         readyMessage:
           "Slides API is reachable. The test presentation was intentionally fake, so this proves API availability without mutating files.",
         disabledAction:
           "Enable the Google Slides API in the Google Cloud project used by this OAuth client.",
-      }),
-    ]);
+        disabledActionHref:
+          "https://console.developers.google.com/apis/api/slides.googleapis.com/overview?project=916083481034",
+      },
+    ];
+    const capabilities: GoogleWorkspaceCapability[] = [];
+    for (const probe of probes) {
+      capabilities.push(await probeGoogleApi(probe));
+    }
 
     const status: GoogleWorkspaceCapabilityStatus = capabilities.some(
       (capability) => capability.status === "ERROR",

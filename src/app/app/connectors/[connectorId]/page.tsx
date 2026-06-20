@@ -209,9 +209,21 @@ export default async function ConnectorDetailPage({
                     {capability.message}
                   </p>
                   {capability.action ? (
-                    <p className="mt-3 rounded-md border border-amber-300/20 bg-amber-300/10 p-3 text-sm leading-6 text-amber-100">
-                      {capability.action}
-                    </p>
+                    <div className="mt-3 space-y-3 rounded-md border border-amber-300/20 bg-amber-300/10 p-3 text-sm leading-6 text-amber-100">
+                      <p>{capability.action}</p>
+                      {capability.actionHref ? (
+                        <Button asChild size="sm" variant="secondary">
+                          <a
+                            href={capability.actionHref}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            Open Google Cloud API
+                            <ExternalLink aria-hidden />
+                          </a>
+                        </Button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               ))}
