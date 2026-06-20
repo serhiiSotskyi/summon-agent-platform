@@ -1837,6 +1837,15 @@ function textElementBox(element: Record<string, unknown>) {
   return box;
 }
 
+function isHeaderOrFooterTextBox(element: Record<string, unknown>) {
+  const box = textElementBox(element);
+  if (!box) {
+    return false;
+  }
+
+  return box.translateY < 1_050_000 || box.translateY > SLIDE_HEIGHT_EMU - 760_000;
+}
+
 function estimatedRenderedLineCount(text: string, boxWidthEmu: number) {
   const widthInches = Math.max(0.75, boxWidthEmu / EMU_PER_INCH);
   const charsPerLine = Math.max(12, Math.floor(widthInches * 15));
@@ -2675,17 +2684,19 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
       const placeholderText = placeholderTextForSlide(reportData, slideText, auditReasons);
-      const forceDedicatedPlaceholderBox = auditRequiresPlaceholder || layoutIssues.length > 0;
       const shapeElements = textElements
         .filter((element) => asString(element.source) === "shape")
         .map((element) => ({
           objectId: asString(element.objectId),
           text: asString(element.text),
+          size: element.size,
+          transform: element.transform,
         }))
         .filter(
           (element) =>
             element.objectId &&
             !isRunGeneratedSlidesElement(element.objectId) &&
+            !isHeaderOrFooterTextBox(asRecord(element)) &&
             element.text.trim().length > 0 &&
             element.text.trim() !== "—",
         );
@@ -2700,12 +2711,12 @@ function genericReportDeckBatchRequests(results: unknown[]) {
                 !/summon digital|confidential|prepared by summon|wendy wu tours \|/i.test(element.text),
             );
 
-      placeholderTargets.slice(0, 80).forEach((element, index) => {
+      placeholderTargets.slice(0, 80).forEach((element) => {
         pushGenericTextElementUpdate(
           placeholderRequests,
           seen,
           element.objectId,
-          forceDedicatedPlaceholderBox ? "—" : index === 0 ? placeholderText : "—",
+          "—",
         );
       });
       pageElements
@@ -2722,13 +2733,11 @@ function genericReportDeckBatchRequests(results: unknown[]) {
         .forEach((objectId) => {
           pushGenericDeleteObjectRequest(placeholderRequests, seen, objectId);
         });
-      if (forceDedicatedPlaceholderBox || placeholderTargets.length === 0) {
-        pushGenericPlaceholderTextBoxRequest(placeholderRequests, seen, {
-          slideObjectId,
-          sourceObjectId: `${slideObjectId}_placeholder`,
-          text: placeholderText,
-        });
-      }
+      pushGenericPlaceholderTextBoxRequest(placeholderRequests, seen, {
+        slideObjectId,
+        sourceObjectId: `${slideObjectId}_placeholder`,
+        text: placeholderText,
+      });
 
       for (const term of staleTerms) {
         if (!staleTermMatches(slideText, term)) {
