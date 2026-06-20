@@ -34,6 +34,17 @@ function formText(formData: FormData, key: string, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function formTextValues(formData: FormData, key: string) {
+  return formData
+    .getAll(key)
+    .map((value) => (typeof value === "string" ? value.trim() : ""));
+}
+
+function formTextValueAt(formData: FormData, key: string, index: number) {
+  const value = formData.getAll(key)[index];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
 function normalizeRole(value: string | undefined): AgentFileRole {
   return AGENT_FILE_ROLES.includes(value as AgentFileRole)
     ? (value as AgentFileRole)
@@ -109,12 +120,25 @@ export async function attachFilesFromFormData({
   formData: FormData;
 }) {
   const created = [];
-  const referenceUrl = formText(formData, "referenceUrl");
-  const referenceName = formText(formData, "referenceName", referenceUrl ? labelFromUrl(referenceUrl) : "");
-  const referenceRole = normalizeRole(formText(formData, "referenceRole", "reference"));
-  const referenceDescription = formText(formData, "referenceDescription");
+  const referenceUrls = formTextValues(formData, "referenceUrl");
 
-  if (referenceUrl) {
+  for (const [index, referenceUrl] of referenceUrls.entries()) {
+    if (!referenceUrl) {
+      continue;
+    }
+
+    const referenceName =
+      formTextValueAt(formData, "referenceName", index) ||
+      labelFromUrl(referenceUrl);
+    const referenceRole = normalizeRole(
+      formTextValueAt(formData, "referenceRole", index) || "reference",
+    );
+    const referenceDescription = formTextValueAt(
+      formData,
+      "referenceDescription",
+      index,
+    );
+
     created.push(
       await createAgentFile({
         agentId,

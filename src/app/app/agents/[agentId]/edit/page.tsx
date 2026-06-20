@@ -1,6 +1,7 @@
 import { ArrowLeft, FileUp, Link2, Save } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -146,46 +147,7 @@ export default async function EditAgentPage({
                   files. Existing files are shown on the agent detail page.
                 </p>
               </div>
-              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
-                <div className="space-y-2">
-                  <Label htmlFor="referenceUrl">Reference URL</Label>
-                  <Input
-                    id="referenceUrl"
-                    name="referenceUrl"
-                    placeholder="Google Slides, Sheets, Drive, Notion, or Looker Studio URL"
-                    type="url"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="referenceRole">Role</Label>
-                  <Select id="referenceRole" name="referenceRole" defaultValue="reference">
-                    <option value="template">Template</option>
-                    <option value="input_data">Input data</option>
-                    <option value="helper_code">Helper code</option>
-                    <option value="reference">Reference</option>
-                    <option value="output_destination">Output destination</option>
-                    <option value="other">Other</option>
-                  </Select>
-                </div>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="referenceName">Reference name</Label>
-                  <Input
-                    id="referenceName"
-                    name="referenceName"
-                    placeholder="Optional label"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="referenceDescription">Reference notes</Label>
-                  <Input
-                    id="referenceDescription"
-                    name="referenceDescription"
-                    placeholder="Optional instruction for this file"
-                  />
-                </div>
-              </div>
+              <AgentReferenceFields idPrefix="edit-reference" />
               <div className="grid gap-4 md:grid-cols-[1fr_180px]">
                 <div className="space-y-2">
                   <Label htmlFor="agentFiles">Upload small text files</Label>
@@ -197,7 +159,9 @@ export default async function EditAgentPage({
                     accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
                   />
                   <p className="text-xs leading-5 text-zinc-500">
-                    CSV, Python, TXT, Markdown, JSON, or YAML up to 1 MB each.
+                    Select multiple files at once with Cmd-click or
+                    Shift-click. CSV, Python, TXT, Markdown, JSON, or YAML up
+                    to 1 MB each.
                   </p>
                 </div>
                 <div className="space-y-2">

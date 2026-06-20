@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -316,54 +317,11 @@ export default async function AgentDetailPage({
                       Add input
                     </p>
                     <p className="mt-1 text-sm leading-6 text-zinc-500">
-                      Upload small text files or add a URL to Google Slides,
+                      Upload small text files or add URLs to Google Slides,
                       Sheets, Drive, Notion, or Looker Studio.
                     </p>
                   </div>
-                  <div className="grid gap-4 md:grid-cols-[1fr_170px]">
-                    <div className="space-y-2">
-                      <Label htmlFor="detailReferenceUrl">Reference URL</Label>
-                      <Input
-                        id="detailReferenceUrl"
-                        name="referenceUrl"
-                        placeholder="https://docs.google.com/..."
-                        type="url"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="detailReferenceRole">Role</Label>
-                      <Select
-                        id="detailReferenceRole"
-                        name="referenceRole"
-                        defaultValue="reference"
-                      >
-                        <option value="template">Template</option>
-                        <option value="input_data">Input data</option>
-                        <option value="helper_code">Helper code</option>
-                        <option value="reference">Reference</option>
-                        <option value="output_destination">Output destination</option>
-                        <option value="other">Other</option>
-                      </Select>
-                    </div>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="detailReferenceName">Reference name</Label>
-                      <Input
-                        id="detailReferenceName"
-                        name="referenceName"
-                        placeholder="Optional"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="detailReferenceDescription">Notes</Label>
-                      <Input
-                        id="detailReferenceDescription"
-                        name="referenceDescription"
-                        placeholder="Optional instruction"
-                      />
-                    </div>
-                  </div>
+                  <AgentReferenceFields idPrefix="detail-reference" />
                   <div className="grid gap-4 md:grid-cols-[1fr_170px]">
                     <div className="space-y-2">
                       <Label htmlFor="detailAgentFiles">Upload files</Label>
@@ -374,6 +332,10 @@ export default async function AgentDetailPage({
                         type="file"
                         accept=".csv,.py,.txt,.md,.json,.yaml,.yml,text/*,application/json"
                       />
+                      <p className="text-xs leading-5 text-zinc-500">
+                        Select multiple files at once with Cmd-click or
+                        Shift-click.
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="detailUploadedFileRole">Upload role</Label>
