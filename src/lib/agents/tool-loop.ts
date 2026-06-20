@@ -1800,6 +1800,14 @@ function formatChartMetricValue(value: number, metricKey: string, currency: stri
   return formatIntegerMetric(value);
 }
 
+function formatGeneratedChartMetricLabel(
+  value: number,
+  metricKey: string,
+  currency: string,
+) {
+  return `${formatChartMetricValue(value, metricKey, currency)} ${chartMetricLabel(metricKey)}`;
+}
+
 function chartMetricForVisual(input: {
   visualIndex: number;
   slideText: string;
@@ -1916,7 +1924,7 @@ function pushGenericTrendChartRequests(
       y,
       width: valueWidth,
       height: rowHeight * 0.72,
-      text: formatChartMetricValue(row.value, metricKey, currency),
+      text: formatGeneratedChartMetricLabel(row.value, metricKey, currency),
     });
   });
 }
@@ -2078,6 +2086,53 @@ function metricLabelValueIssues(input: {
     if (!containsAnyVariant(metricElement.text, expected.variants)) {
       issues.push(
         `KPI metric label "${element.text.trim()}" is paired with "${metricElement.text.trim()}" instead of ${expected.replacement}.`,
+      );
+    }
+  }
+
+  return issues;
+}
+
+function generatedChartMetricIssues(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+}) {
+  if (!/by month - generated from uploaded data/i.test(input.slideText)) {
+    return [];
+  }
+
+  const metadata = reportMetadataFromArtifact(input.reportData);
+  const currency = metadata.currency || "GBP";
+  const issues: string[] = [];
+  const chartKeys = [
+    ["cost", "Spend"],
+    ["cpl", "CPL"],
+    ["leads", "Leads"],
+    ["ctr", "CTR"],
+    ["cvr", "CVR"],
+    ["clicks", "Clicks"],
+  ] as const;
+
+  for (const [metricKey, label] of chartKeys) {
+    if (!new RegExp(`${label}\\s+by month - generated from uploaded data`, "i").test(input.slideText)) {
+      continue;
+    }
+
+    const expectedRows = genericTrendChartRows(input.reportData, metricKey);
+    if (expectedRows.length < 2) {
+      continue;
+    }
+
+    const missing = expectedRows.filter((row) => {
+      const valueLabel = formatGeneratedChartMetricLabel(row.value, metricKey, currency);
+      return !input.slideText.includes(row.period) || !input.slideText.includes(valueLabel);
+    });
+
+    if (missing.length > 0) {
+      issues.push(
+        `${label} generated chart is missing or has incorrect monthly values for ${missing
+          .map((row) => row.period)
+          .join(", ")}.`,
       );
     }
   }
@@ -2619,6 +2674,12 @@ async function auditGoogleSlidesDeck(input: {
         slideTitle: title,
       }),
     );
+    reasons.push(
+      ...generatedChartMetricIssues({
+        reportData: input.reportData,
+        slideText: text,
+      }),
+    );
     if (
       hasUnsupportedComparatorData(input.reportData) &&
       unsupportedComparatorClaim(text) &&
@@ -2661,6 +2722,8 @@ async function auditGoogleSlidesDeck(input: {
           normalizedReason.includes("copied chart") ||
           normalizedReason.includes("unverified copied chart") ||
           normalizedReason.includes("unverified copied image") ||
+          normalizedReason.includes("generated chart") ||
+          normalizedReason.includes("monthly values") ||
           normalizedReason.includes("kpi") ||
           normalizedReason.includes("metric")
         );
