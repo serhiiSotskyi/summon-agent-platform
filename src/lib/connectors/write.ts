@@ -116,6 +116,8 @@ type GoogleSlidesTextElement = {
   objectId: string | null;
   text: string;
   source: "shape" | "table_cell";
+  size?: unknown;
+  transform?: unknown;
   rowIndex?: number;
   columnIndex?: number;
 };
@@ -1248,6 +1250,8 @@ export async function inspectGoogleSlidesTemplate(input: {
                   objectId: element.objectId ?? null,
                   text: shapeText,
                   source: "shape",
+                  size: element.size ?? null,
+                  transform: element.transform ?? null,
                 },
               ]
             : [];

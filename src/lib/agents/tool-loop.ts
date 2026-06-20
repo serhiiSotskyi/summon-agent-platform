@@ -1754,6 +1754,165 @@ function renderedElementBox(element: Record<string, unknown>) {
   };
 }
 
+const SLIDE_WIDTH_EMU = 9_144_000;
+const SLIDE_HEIGHT_EMU = 5_143_500;
+const EMU_PER_INCH = 914_400;
+
+type TextLayoutIssue = {
+  objectId: string;
+  text: string;
+  reason: string;
+  box: ReturnType<typeof renderedElementBox>;
+};
+
+function textElementBox(element: Record<string, unknown>) {
+  const box = renderedElementBox(element);
+  if (box.width <= 0 || box.height <= 0) {
+    return null;
+  }
+  return box;
+}
+
+function estimatedRenderedLineCount(text: string, boxWidthEmu: number) {
+  const widthInches = Math.max(0.75, boxWidthEmu / EMU_PER_INCH);
+  const charsPerLine = Math.max(12, Math.floor(widthInches * 15));
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce(
+      (total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)),
+      0,
+    );
+}
+
+function maxReadableLinesForBox(boxHeightEmu: number) {
+  const heightInches = Math.max(0.2, boxHeightEmu / EMU_PER_INCH);
+  return Math.max(1, Math.floor(heightInches * 5.5));
+}
+
+function textLayoutIssueForElement(
+  element: Record<string, unknown>,
+): TextLayoutIssue | null {
+  if (asString(element.source) !== "shape") {
+    return null;
+  }
+
+  const objectId = asString(element.objectId);
+  const text = asString(element.text).trim();
+  const box = textElementBox(element);
+  if (!objectId || !text || !box) {
+    return null;
+  }
+
+  const isHeaderBand = box.translateY < 1_050_000;
+  const isTinyTextBox = box.height < 520_000 || box.width < 900_000;
+  const estimatedLines = estimatedRenderedLineCount(text, box.width);
+  const maxLines = maxReadableLinesForBox(box.height);
+
+  if (box.translateX < -20_000 || box.translateY < -20_000) {
+    return {
+      objectId,
+      text,
+      box,
+      reason: "Text element starts outside the slide bounds.",
+    };
+  }
+
+  if (
+    box.translateX + box.width > SLIDE_WIDTH_EMU + 20_000 ||
+    box.translateY + box.height > SLIDE_HEIGHT_EMU + 20_000
+  ) {
+    return {
+      objectId,
+      text,
+      box,
+      reason: "Text element extends outside the slide bounds.",
+    };
+  }
+
+  if (isHeaderBand && text.length > 120) {
+    return {
+      objectId,
+      text,
+      box,
+      reason:
+        "Long narrative text is placed in the header/title band and is likely to overflow.",
+    };
+  }
+
+  if (isTinyTextBox && text.length > 90) {
+    return {
+      objectId,
+      text,
+      box,
+      reason: "Long text is placed in a small text box and is likely clipped.",
+    };
+  }
+
+  if (text.length > 120 && estimatedLines > maxLines + 1) {
+    return {
+      objectId,
+      text,
+      box,
+      reason: `Text likely overflows its box: estimated ${estimatedLines} lines for about ${maxLines} readable lines.`,
+    };
+  }
+
+  return null;
+}
+
+function textLayoutIssuesForSlide(slide: Record<string, unknown>) {
+  return asObjectArray(slide.textElements)
+    .map(textLayoutIssueForElement)
+    .filter((issue): issue is TextLayoutIssue => Boolean(issue));
+}
+
+function compactLayoutRepairText(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+  slideTitle: string;
+  issue: TextLayoutIssue;
+}) {
+  const segment = slideSegmentForReportData(
+    input.reportData,
+    input.slideText,
+    input.slideTitle,
+  );
+  const metadata = reportMetadataFromArtifact(input.reportData);
+  const isHeaderOrSmallBox =
+    input.issue.box.translateY < 1_050_000 ||
+    input.issue.box.height < 620_000 ||
+    input.issue.box.width < 1_200_000;
+
+  if (isHeaderOrSmallBox) {
+    if (segment) {
+      return `${segment.label} Performance Summary`;
+    }
+
+    const client = metadata.client || "Report";
+    const market = metadata.market ? ` ${metadata.market}` : "";
+    if (/\boverall|performance|trend|summary|qbr|report\b/i.test(input.slideText)) {
+      return `${client}${market} Performance Summary`;
+    }
+
+    return input.slideTitle && input.slideTitle.length <= 80
+      ? input.slideTitle
+      : "Report Summary";
+  }
+
+  const commentary = reportDeckCommentaryForSlide({
+    reportData: input.reportData,
+    slideText: input.slideText,
+    slideTitle: input.slideTitle,
+  });
+  const firstSentence = commentary.split(/\n+/).find(Boolean) ?? commentary;
+  return firstSentence.length > 180
+    ? `${firstSentence.slice(0, 177).trim()}...`
+    : firstSentence;
+}
+
 function isLargeCopiedVisualElement(element: Record<string, unknown>) {
   const type = asString(element.type);
   if (!["image", "sheets_chart"].includes(type)) {
@@ -2380,6 +2539,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       hasUnsupportedComparatorData(reportData) && unsupportedComparatorClaim(slideText);
     const placeholderWithCopiedTableContent =
       slideLooksLikePlaceholder(slideText) && hasSubstantiveTableContent(slide);
+    const layoutIssues = textLayoutIssuesForSlide(slide);
     const copiedVisuals = largeCopiedVisualElements(slide);
     const values = reportMetricValuesForSlide({
       reportData,
@@ -2391,6 +2551,20 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       reportData,
       slideText,
       slideTitle,
+    });
+
+    layoutIssues.forEach((issue) => {
+      pushGenericTextElementUpdate(
+        updateRequests,
+        seen,
+        issue.objectId,
+        compactLayoutRepairText({
+          reportData,
+          slideText,
+          slideTitle,
+          issue,
+        }),
+      );
     });
 
     if (
@@ -2572,8 +2746,21 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       .map((element) => ({
         objectId: asString(element.objectId),
         text: asString(element.text),
+        size: element.size,
+        transform: element.transform,
       }))
-      .filter((element) => element.objectId && element.text.length > 140)
+      .filter((element) => {
+        if (!element.objectId || element.text.length <= 140) {
+          return false;
+        }
+        const box = textElementBox(asRecord(element));
+        return Boolean(
+          box &&
+            box.translateY >= 1_050_000 &&
+            box.height >= 900_000 &&
+            box.width >= 1_400_000,
+        );
+      })
       .at(-1);
     if (
       longTextElement &&
@@ -2594,16 +2781,43 @@ function genericReportDeckBatchRequests(results: unknown[]) {
         .map((element) => ({
           objectId: asString(element.objectId),
           text: asString(element.text),
+          size: element.size,
+          transform: element.transform,
         }))
         .filter((element) => element.objectId && element.text.trim().length > 0 && element.text.trim() !== "—");
       const fallbackElement = shapeElements
-        .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle))
+        .filter((element) => {
+          if (shouldPreservePlaceholderElement(element.text, slideTitle)) {
+            return false;
+          }
+          const box = textElementBox(asRecord(element));
+          return Boolean(
+            box &&
+              box.translateY >= 1_050_000 &&
+              box.height >= 900_000 &&
+              box.width >= 1_400_000,
+          );
+        })
         .sort((a, b) => b.text.length - a.text.length)
         .at(0) ??
         shapeElements
           .filter(
-            (element) =>
-              !/summon digital|confidential|prepared by summon|wendy wu tours \|/i.test(element.text),
+            (element) => {
+              if (
+                /summon digital|confidential|prepared by summon|wendy wu tours \|/i.test(
+                  element.text,
+                )
+              ) {
+                return false;
+              }
+              const box = textElementBox(asRecord(element));
+              return Boolean(
+                box &&
+                  box.translateY >= 1_050_000 &&
+                  box.height >= 900_000 &&
+                  box.width >= 1_400_000,
+              );
+            },
           )
           .at(0);
       if (fallbackElement) {
@@ -2717,6 +2931,9 @@ async function auditGoogleSlidesDeck(input: {
         slideText: text,
       }),
     );
+    reasons.push(
+      ...textLayoutIssuesForSlide(slide).map((issue) => issue.reason),
+    );
     if (
       hasUnsupportedComparatorData(input.reportData) &&
       unsupportedComparatorClaim(text) &&
@@ -2761,6 +2978,12 @@ async function auditGoogleSlidesDeck(input: {
           normalizedReason.includes("unverified copied image") ||
           normalizedReason.includes("generated chart") ||
           normalizedReason.includes("monthly values") ||
+          normalizedReason.includes("layout") ||
+          normalizedReason.includes("overflow") ||
+          normalizedReason.includes("outside the slide") ||
+          normalizedReason.includes("likely clipped") ||
+          normalizedReason.includes("small text box") ||
+          normalizedReason.includes("header/title band") ||
           normalizedReason.includes("kpi") ||
           normalizedReason.includes("metric")
         );
