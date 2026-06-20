@@ -1,5 +1,6 @@
 import { Bot, FileUp, Link2, Rocket, ShieldCheck } from "lucide-react";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
+import { AgentStarterBriefs } from "@/components/app/agent-starter-briefs";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ export default async function NewAgentPage({
                 required
               />
             </div>
+            <AgentStarterBriefs />
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="name">Agent name</Label>

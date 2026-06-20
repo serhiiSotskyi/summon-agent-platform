@@ -73,6 +73,7 @@ The run evidence proves:
 
 - Sign-in and shared workspace access.
 - Agent creation with natural-language prompts.
+- Starter briefs on the new-agent page for common Summon workflows such as report decks, budget pacing, data cleanup, and client research.
 - Multiple reference links and multi-file uploads for small text/code/data files.
 - Manual runs and scheduled runs.
 - Postgres-backed worker execution through Railway.
