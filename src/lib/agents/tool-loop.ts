@@ -2209,6 +2209,15 @@ function chartMetricForVisual(input: {
   slideTitle: string;
 }) {
   const haystack = `${input.slideTitle}\n${input.slideText}`.toLowerCase();
+  if (/\bleads?\b|\bconversions?\b/.test(haystack)) {
+    return "leads";
+  }
+  if (/\bspend\b|\bcost\b|\bmedia spend\b/.test(haystack)) {
+    return "cost";
+  }
+  if (/\bclicks?\b/.test(haystack)) {
+    return "clicks";
+  }
   if (/\bcpl\b|cost per lead/.test(haystack)) {
     return input.visualIndex === 0 ? "cpl" : "cost";
   }
@@ -2423,6 +2432,252 @@ function visualPlaceholderTextForSlide(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function reportDataHasUsableCoverage(reportData: Record<string, unknown>) {
+  return (
+    expectedReportValues(reportData).length >= 3 ||
+    monthlyTrendRows(reportData).length >= 2 ||
+    reportSegments(reportData).length >= 2
+  );
+}
+
+function topReportSegments(
+  reportData: Record<string, unknown>,
+  category: "campaign" | "destination",
+  limit = 5,
+) {
+  return reportSegments(reportData)
+    .filter((segment) => segment.category === category)
+    .map((segment) => {
+      const leads = numericMetric(segment.metrics.sales_leads ?? segment.metrics.leads);
+      const cost = numericMetric(segment.metrics.cost ?? segment.metrics.spend);
+      return {
+        ...segment,
+        sortValue: typeof leads === "number" ? leads : typeof cost === "number" ? cost : 0,
+      };
+    })
+    .sort((a, b) => b.sortValue - a.sortValue)
+    .slice(0, limit);
+}
+
+function genericGeneratedReportSlideContent(input: {
+  reportData: Record<string, unknown>;
+  generatedIndex: number;
+}) {
+  const metadata = reportMetadataFromArtifact(input.reportData);
+  const overall = reportOverallKpis(input.reportData);
+  const currency = metadata.currency || "GBP";
+  const client = metadata.client || "Client";
+  const market = metadata.market || "Market";
+  const period = metadata.period || "reporting period";
+  const metricGroups = reportMetricGroupsForRecord(overall, input.reportData, false);
+  const metricLine =
+    metricGroups
+      .filter((group) => ["leads", "cost", "cpl", "cvr", "clicks", "ctr"].includes(group.key))
+      .slice(0, 6)
+      .map((group) => `${chartMetricLabel(group.key)}: ${group.replacement}`)
+      .join(" | ") || "No KPI values were available in the structured report data.";
+  const trendRows = monthlyTrendRows(input.reportData);
+  const campaignSegments = topReportSegments(input.reportData, "campaign");
+  const destinationSegments = topReportSegments(input.reportData, "destination");
+  const topics = [
+    "Performance Summary",
+    "KPI Scorecard",
+    "Monthly Spend Trend",
+    "Monthly Lead Trend",
+    "Efficiency Trend",
+    "Campaign Breakdown",
+    "Destination Breakdown",
+    "Recommendations",
+    "Data Caveats",
+    "Next Actions",
+  ];
+  const topic = topics[input.generatedIndex % topics.length] ?? "Performance Summary";
+
+  const trendText =
+    trendRows
+      .slice(0, 6)
+      .map((row) => {
+        const cost = formatReportCurrency(row.metrics.cost ?? row.metrics.spend, currency);
+        const leads = formatIntegerMetric(row.metrics.sales_leads ?? row.metrics.leads);
+        const cpl = formatReportDecimalCurrency(row.metrics.cpl, currency);
+        return `${row.period}: ${[cost, leads ? `${leads} leads` : "", cpl ? `${cpl} CPL` : ""]
+          .filter(Boolean)
+          .join(", ")}`;
+      })
+      .join("\n") || "Monthly trend rows were not available in the structured report data.";
+
+  const segmentLines = (segments: ReturnType<typeof topReportSegments>) =>
+    segments
+      .map((segment) => {
+        const spend = formatReportCurrency(segment.metrics.cost ?? segment.metrics.spend, currency);
+        const leads = formatIntegerMetric(segment.metrics.sales_leads ?? segment.metrics.leads);
+        const cpl = formatReportDecimalCurrency(segment.metrics.cpl, currency);
+        return `- ${segment.label}: ${[spend, leads ? `${leads} leads` : "", cpl ? `${cpl} CPL` : ""]
+          .filter(Boolean)
+          .join(", ")}`;
+      })
+      .join("\n");
+
+  const bodies: Record<string, string> = {
+    "Performance Summary": [
+      `${client} ${market} performance for ${period} was rebuilt from uploaded data.`,
+      metricLine,
+      reportDeckCommentary(input.reportData),
+    ].join("\n"),
+    "KPI Scorecard": [`Fresh KPI values calculated from the uploaded file:`, metricLine].join("\n"),
+    "Monthly Spend Trend": [`Spend trend generated from uploaded data:`, trendText].join("\n"),
+    "Monthly Lead Trend": [`Lead trend generated from uploaded data:`, trendText].join("\n"),
+    "Efficiency Trend": [`Efficiency indicators generated from uploaded data:`, metricLine, trendText].join(
+      "\n",
+    ),
+    "Campaign Breakdown":
+      segmentLines(campaignSegments) ||
+      `Campaign breakdown rows were not available. Overall values: ${metricLine}`,
+    "Destination Breakdown":
+      segmentLines(destinationSegments) ||
+      `Destination breakdown rows were not available. Overall values: ${metricLine}`,
+    Recommendations: [
+      "Recommended review points based on the generated metrics:",
+      "- Check budget concentration in the largest spend segments.",
+      "- Prioritise campaigns or destinations with stronger lead volume and lower CPL.",
+      "- Confirm strategic actions with current planning notes before client sharing.",
+    ].join("\n"),
+    "Data Caveats": [
+      "Generated from the uploaded CSV and structured sandbox output.",
+      "Planning updates, prior-year comparator context, and live-platform changes should be added by the team where relevant.",
+      `Core metrics available: ${metricLine}`,
+    ].join("\n"),
+    "Next Actions": [
+      "Suggested workflow before sending externally:",
+      "- Review generated metrics against the source export.",
+      "- Add current client updates or planning commentary where needed.",
+      "- Replace any remaining source-template-only pages with current evidence.",
+    ].join("\n"),
+  };
+
+  return {
+    title: `${client} ${market} - ${topic}`,
+    body: bodies[topic] ?? `${topic}\n${metricLine}`,
+    topic,
+  };
+}
+
+function pushGenericGeneratedReportSlideRequests(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  input: {
+    slide: Record<string, unknown>;
+    slideObjectId: string;
+    reportData: Record<string, unknown>;
+    generatedIndex: number;
+    staleTerms: string[];
+  },
+) {
+  const content = genericGeneratedReportSlideContent({
+    reportData: input.reportData,
+    generatedIndex: input.generatedIndex,
+  });
+  const textElements = asObjectArray(input.slide.textElements);
+  const pageElements = asObjectArray(input.slide.pageElements);
+  const shapeElements = textElements
+    .filter((element) => asString(element.source) === "shape")
+    .map((element) => ({
+      objectId: asString(element.objectId),
+      text: asString(element.text),
+      size: element.size,
+      transform: element.transform,
+    }))
+    .filter((element) => element.objectId && !isRunGeneratedSlidesElement(element.objectId));
+  const titleTarget =
+    shapeElements
+      .filter((element) => {
+        const box = textElementBox(asRecord(element));
+        return Boolean(box && box.translateY < 1_050_000 && box.width > 1_000_000);
+      })
+      .sort((a, b) => {
+        const aBox = textElementBox(asRecord(a));
+        const bBox = textElementBox(asRecord(b));
+        return (aBox?.translateY ?? 0) - (bBox?.translateY ?? 0);
+      })
+      .at(0) ?? shapeElements.at(0);
+
+  if (titleTarget) {
+    pushGenericTextElementUpdate(requests, seen, titleTarget.objectId, content.title);
+  }
+
+  shapeElements
+    .filter((element) => element.objectId !== titleTarget?.objectId)
+    .filter((element) => {
+      if (shouldPreservePlaceholderElement(element.text, "", input.staleTerms)) {
+        return false;
+      }
+      const box = textElementBox(asRecord(element));
+      return Boolean(box && box.translateY > 820_000 && box.translateY < SLIDE_HEIGHT_EMU - 620_000);
+    })
+    .slice(0, 16)
+    .forEach((element) => {
+      pushGenericTextElementUpdate(requests, seen, element.objectId, "—");
+    });
+
+  pageElements
+    .filter((element) => {
+      const objectId = asString(element.objectId);
+      return (
+        ["table", "sheets_chart"].includes(asString(element.type)) ||
+        isLargeCopiedVisualElement(element) ||
+        isRunGeneratedSlidesElement(objectId)
+      );
+    })
+    .map((element) => asString(element.objectId))
+    .filter(Boolean)
+    .forEach((objectId) => {
+      pushGenericDeleteObjectRequest(requests, seen, objectId);
+    });
+
+  pushGenericRectangleRequest(requests, seen, {
+    objectId: stableSlidesObjectId("summon_note_bg", `${input.slideObjectId}_${input.generatedIndex}`),
+    slideObjectId: input.slideObjectId,
+    x: 900_000,
+    y: 1_080_000,
+    width: 7_450_000,
+    height: 3_560_000,
+    color: { red: 0.975, green: 0.985, blue: 0.975 },
+  });
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: stableSlidesObjectId("summon_note_title", `${input.slideObjectId}_${input.generatedIndex}`),
+    slideObjectId: input.slideObjectId,
+    x: 1_120_000,
+    y: 1_260_000,
+    width: 6_950_000,
+    height: 360_000,
+    text: content.title,
+    fontSizePt: 16,
+    bold: true,
+    color: { red: 0.08, green: 0.1, blue: 0.1 },
+  });
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: stableSlidesObjectId("summon_note_body", `${input.slideObjectId}_${input.generatedIndex}`),
+    slideObjectId: input.slideObjectId,
+    x: 1_130_000,
+    y: 1_760_000,
+    width: 6_890_000,
+    height: 2_560_000,
+    text: content.body.length > 850 ? `${content.body.slice(0, 847).trim()}...` : content.body,
+    fontSizePt: 10,
+    color: { red: 0.16, green: 0.18, blue: 0.18 },
+  });
+
+  for (const term of input.staleTerms) {
+    if (staleTermMatches(content.title, term) || staleTermMatches(content.body, term)) {
+      continue;
+    }
+    const slideText = textElements.map((element) => asString(element.text)).join(" ");
+    if (staleTermMatches(slideText, term)) {
+      pushGenericSlideReplacement(requests, seen, input.slideObjectId, term, "—");
+    }
+  }
 }
 
 function metricKeyForLabelText(value: string) {
@@ -2858,6 +3113,15 @@ function genericReportDeckBatchRequests(results: unknown[]) {
   });
   const nonCurrencyStaleTerms = staleTerms.filter((term) => !term.includes("£"));
   const currencyStaleTerms = staleTerms.filter((term) => term.includes("£"));
+  const reportSlides = slides.filter(
+    (slide) => asString(slide.classification) !== "section_divider",
+  );
+  const minimumGeneratedContentSlides =
+    reportSlides.length >= 6
+      ? Math.min(12, Math.max(8, Math.ceil(reportSlides.length * 0.25)))
+      : 1;
+  const canGenerateContentSlides = reportDataHasUsableCoverage(reportData);
+  let generatedContentSlideCount = 0;
 
   for (const slide of slides) {
     const slideObjectId = asString(slide.slideObjectId);
@@ -2894,15 +3158,35 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       slideText,
       slideTitle,
     });
-
-    if (
+    const shouldHardPlaceholder =
       auditRequiresPlaceholder ||
       shouldPlaceholderReportSlide(reportData, slideText) ||
       shouldPlaceholderSegmentTrendSlide(reportData, slideText, slideTitle) ||
       placeholderWithCopiedTableContent ||
-      malformedPlaceholderText(slideText) ||
-      (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
-    ) {
+      malformedPlaceholderText(slideText);
+    const shouldSoftPlaceholder =
+      containsStaleTerm &&
+      !containsExpectedValue &&
+      !/summary|overview|performance report|qbr/i.test(slideText);
+    const canConvertToGeneratedContent =
+      canGenerateContentSlides &&
+      asString(slide.classification) !== "section_divider" &&
+      generatedContentSlideCount < minimumGeneratedContentSlides &&
+      (shouldHardPlaceholder || shouldSoftPlaceholder || copiedVisuals.length > 0);
+
+    if (canConvertToGeneratedContent) {
+      pushGenericGeneratedReportSlideRequests(updateRequests, seen, {
+        slide,
+        slideObjectId,
+        reportData,
+        generatedIndex: generatedContentSlideCount,
+        staleTerms,
+      });
+      generatedContentSlideCount += 1;
+      continue;
+    }
+
+    if (shouldHardPlaceholder || shouldSoftPlaceholder) {
       const placeholderText = placeholderTextForSlide(reportData, slideText, auditReasons);
       textElements
         .filter((element) => asString(element.source) === "shape")
@@ -3235,7 +3519,11 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
   }
 
-  return [...placeholderRequests, ...updateRequests].slice(
+  const remainingPlaceholderBudget = Math.max(
+    0,
+    GENERIC_REPORT_BATCH_REQUEST_LIMIT - updateRequests.length,
+  );
+  return [...updateRequests, ...placeholderRequests.slice(0, remainingPlaceholderBudget)].slice(
     0,
     GENERIC_REPORT_BATCH_REQUEST_LIMIT,
   );
