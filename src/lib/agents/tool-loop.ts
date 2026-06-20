@@ -1690,6 +1690,35 @@ function pushGenericPositionedTextRequest(
   }
 }
 
+function pushGenericPlaceholderTextBoxRequest(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  input: {
+    slideObjectId: string;
+    sourceObjectId: string;
+    text: string;
+  },
+) {
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: stableSlidesObjectId("summon_placeholder", input.sourceObjectId),
+    slideObjectId: input.slideObjectId,
+    x: 1_120_000,
+    y: 1_480_000,
+    width: 6_900_000,
+    height: 1_850_000,
+    text: input.text,
+    fontSizePt: 14,
+  });
+}
+
+function isRunGeneratedSlidesElement(objectId: string) {
+  return (
+    objectId.startsWith("summon_chart_") ||
+    objectId.startsWith("summon_note_") ||
+    objectId.startsWith("summon_placeholder_")
+  );
+}
+
 function staleTermRegex(term: string) {
   const normalized = term.trim().toLowerCase();
   if (!normalized) {
@@ -2601,13 +2630,23 @@ function genericReportDeckBatchRequests(results: unknown[]) {
           index === 0 ? placeholderText : "—",
         );
       });
+      if (placeholderTargets.length === 0) {
+        pushGenericPlaceholderTextBoxRequest(placeholderRequests, seen, {
+          slideObjectId,
+          sourceObjectId: `${slideObjectId}_placeholder`,
+          text: placeholderText,
+        });
+      }
 
       pageElements
-        .filter(
-          (element) =>
+        .filter((element) => {
+          const objectId = asString(element.objectId);
+          return (
             ["table", "sheets_chart"].includes(asString(element.type)) ||
-            isLargeCopiedVisualElement(element),
-        )
+            isLargeCopiedVisualElement(element) ||
+            isRunGeneratedSlidesElement(objectId)
+          );
+        })
         .map((element) => asString(element.objectId))
         .filter(Boolean)
         .forEach((objectId) => {
