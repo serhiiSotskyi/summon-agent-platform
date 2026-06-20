@@ -1,5 +1,5 @@
-import { SignInButton, SignUpButton } from "@clerk/nextjs";
 import { Bot, ShieldCheck, Sparkles } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 export function SignedOutApp() {
@@ -17,12 +17,12 @@ export function SignedOutApp() {
           approval controls.
         </p>
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
-          <SignInButton mode="modal">
-            <Button variant="secondary">Sign in</Button>
-          </SignInButton>
-          <SignUpButton mode="modal">
-            <Button>Sign up</Button>
-          </SignUpButton>
+          <Button asChild variant="secondary">
+            <Link href="/sign-in?redirect_url=/app">Sign in</Link>
+          </Button>
+          <Button asChild>
+            <Link href="/sign-up?redirect_url=/app">Sign up</Link>
+          </Button>
         </div>
         <div className="mt-8 grid gap-3 text-left sm:grid-cols-3">
           {[

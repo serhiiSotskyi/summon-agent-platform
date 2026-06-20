@@ -13,7 +13,12 @@ export default function SignUpPage() {
             Join the workspace, then build and run agents with the team.
           </p>
         </div>
-        <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
+        <SignUp
+          fallbackRedirectUrl="/app"
+          path="/sign-up"
+          routing="path"
+          signInUrl="/sign-in"
+        />
       </div>
     </main>
   );

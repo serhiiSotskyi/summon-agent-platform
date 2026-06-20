@@ -13,7 +13,12 @@ export default function SignInPage() {
             Access your workspace agents, approvals, and connected tools.
           </p>
         </div>
-        <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" />
+        <SignIn
+          fallbackRedirectUrl="/app"
+          path="/sign-in"
+          routing="path"
+          signUpUrl="/sign-up"
+        />
       </div>
     </main>
   );
