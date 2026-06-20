@@ -1,4 +1,4 @@
-import { Mail, Plus, RotateCw, Users, XCircle } from "lucide-react";
+import { Link2, Mail, Plus, RotateCw, Users, XCircle } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "@/components/app/page-header";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -18,6 +18,7 @@ import { formatRelativeTime } from "@/lib/app/format";
 import { getDb } from "@/lib/db";
 import {
   createSharedWorkspace,
+  generateWorkspaceInvitationLink,
   inviteWorkspaceMember,
   resendWorkspaceInvitation,
   revokeWorkspaceInvitation,
@@ -33,6 +34,7 @@ type SearchParams = Promise<{
 
 const inviteStatusMessages: Record<string, string> = {
   added: "Member added to this workspace.",
+  "link-generated": "Manual invite link generated. Send it directly to the invited teammate.",
   manual: "Invitation created. Send the invite link manually.",
   resent: "Invitation email sent again.",
   revoked: "Invitation revoked.",
@@ -259,6 +261,22 @@ export default async function WorkspacesPage({
                               <Button size="sm" type="submit" variant="secondary">
                                 <RotateCw aria-hidden />
                                 Resend
+                              </Button>
+                            </form>
+                            <form action={generateWorkspaceInvitationLink}>
+                              <input
+                                name="workspaceId"
+                                type="hidden"
+                                value={context.workspace.id}
+                              />
+                              <input
+                                name="invitationId"
+                                type="hidden"
+                                value={invitation.id}
+                              />
+                              <Button size="sm" type="submit" variant="secondary">
+                                <Link2 aria-hidden />
+                                Get link
                               </Button>
                             </form>
                             <form action={revokeWorkspaceInvitation}>

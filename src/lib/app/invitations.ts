@@ -199,6 +199,50 @@ export async function createOrRefreshWorkspaceInvitation({
   };
 }
 
+export async function createManualWorkspaceInvitationLink({
+  invitationId,
+  invitedBy,
+  workspaceId,
+}: {
+  invitationId: string;
+  invitedBy: User;
+  workspaceId: string;
+}) {
+  const db = getDb();
+  const token = inviteToken();
+  const inviteUrl = buildInviteUrl(token);
+  const tokenHash = hashInviteToken(token);
+  const expiresAt = inviteExpiresAt();
+  const deliveryStatus: InviteDeliveryStatus = {
+    sent: false,
+    provider: "manual",
+    reason: "Manual invite link generated.",
+  };
+
+  const invitation = await db.workspaceInvitation.update({
+    where: {
+      id: invitationId,
+      workspaceId,
+      status: "PENDING",
+    },
+    data: {
+      acceptedAt: null,
+      acceptedById: null,
+      deliveryStatus: deliveryStatus as unknown as Prisma.InputJsonObject,
+      expiresAt,
+      invitedById: invitedBy.id,
+      status: "PENDING",
+      tokenHash,
+    },
+  });
+
+  return {
+    deliveryStatus,
+    inviteUrl,
+    invitation,
+  };
+}
+
 export async function getWorkspaceInvitationPreview(token: string) {
   const tokenHash = hashInviteToken(token);
   const invitation = await getDb().workspaceInvitation.findUnique({

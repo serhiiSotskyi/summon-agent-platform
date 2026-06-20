@@ -29,6 +29,7 @@ import {
 } from "@/lib/app/context";
 import { titleFromPrompt } from "@/lib/app/format";
 import {
+  createManualWorkspaceInvitationLink,
   createOrRefreshWorkspaceInvitation,
   normalizeInviteEmail,
 } from "@/lib/app/invitations";
@@ -267,6 +268,40 @@ export async function resendWorkspaceInvitation(formData: FormData) {
           ...inviteDeliveryFailureParams(refreshedInvitation.deliveryStatus),
         },
   );
+}
+
+export async function generateWorkspaceInvitationLink(formData: FormData) {
+  const workspaceId = getText(formData, "workspaceId");
+  const invitationId = getText(formData, "invitationId");
+  const context = await requireContext(workspaceId);
+
+  if (!canManageWorkspace(context.role)) {
+    redirectToWorkspaces(context.workspace.id, { inviteError: "permission" });
+  }
+
+  const invitation = await getDb().workspaceInvitation.findFirst({
+    where: {
+      id: invitationId,
+      workspaceId: context.workspace.id,
+      status: "PENDING",
+    },
+  });
+
+  if (!invitation) {
+    redirectToWorkspaces(context.workspace.id, { inviteError: "missing-invite" });
+  }
+
+  const refreshedInvitation = await createManualWorkspaceInvitationLink({
+    invitationId: invitation.id,
+    invitedBy: context.user,
+    workspaceId: context.workspace.id,
+  });
+
+  revalidatePath("/app", "layout");
+  redirectToWorkspaces(context.workspace.id, {
+    inviteLink: refreshedInvitation.inviteUrl,
+    inviteStatus: "link-generated",
+  });
 }
 
 export async function revokeWorkspaceInvitation(formData: FormData) {

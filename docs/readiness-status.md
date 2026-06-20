@@ -97,13 +97,15 @@ DNS records for `summon.co` are present:
 | `MX send.summon.co` | `feedback-smtp.eu-west-1.amazonses.com`, priority 10 |
 | `TXT send.summon.co` | `v=spf1 include:amazonses.com ~all` |
 
-However, invite delivery is still failing in production with:
+However, invite email delivery is still failing in production with:
 
 ```text
 Resend returned 403.
 ```
 
 The local Resend key is restricted to sending emails only, so it cannot trigger domain verification through the Resend API. The required action is to click/restart verification in the Resend dashboard, or temporarily provide a Resend API key with domain-management access.
+
+Product workaround: workspace owners/admins can use **Get link** on a pending invite to rotate the secure invite token and copy a manual invite link without attempting email delivery.
 
 Pending invites currently affected:
 
