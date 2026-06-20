@@ -5057,18 +5057,37 @@ async function executeOneTool(input: {
     }
 
     if (toolName === "notion.createPage") {
+      const title = asString(request.title, `${input.agent.name} output`);
       const links = asObjectArray(request.links)
         .map((link) => ({
           title: asString(link.title, "Artifact"),
           url: asString(link.url),
         }))
         .filter((link) => link.url);
-      result = await createNotionPage({
+      const notionResult = await createNotionPage({
         workspaceId: input.workspaceId,
-        title: asString(request.title, `${input.agent.name} output`),
+        title,
         content: asString(request.content),
         links,
       });
+      result = notionResult;
+      const artifact = artifactOutput(
+        await createArtifact({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          artifactType: "notion_page",
+          name: title,
+          location: notionResult.pageUrl,
+          mimeType: "text/uri-list",
+          payload: {
+            pageId: notionResult.pageId,
+            pageUrl: notionResult.pageUrl,
+            createdAt: notionResult.createdAt,
+            links,
+          },
+        }),
+      );
+      artifacts.push(artifact);
     }
 
         if (typeof result === "undefined") {
