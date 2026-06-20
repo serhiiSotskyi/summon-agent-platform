@@ -31,6 +31,7 @@ import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
 
 const MAX_TOOL_ITERATIONS = 12;
 const MAX_TOOL_CALLS_PER_ITERATION = 5;
+const MAX_DETERMINISTIC_FINALIZATION_STEPS = 8;
 const TOOL_LLM_TIMEOUT_MS = 45_000;
 const FINAL_LLM_TIMEOUT_MS = 45_000;
 
@@ -3618,6 +3619,35 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     }
 
     for (const call of calls) {
+      toolResults.push(
+        await executeOneTool({
+          agentRunId: input.agentRunId,
+          workspaceId: input.workspaceId,
+          agent: input.agent,
+          call,
+          availableTools,
+          state,
+        }),
+      );
+    }
+  }
+
+  for (
+    let finalizationStep = 0;
+    finalizationStep < MAX_DETERMINISTIC_FINALIZATION_STEPS;
+    finalizationStep += 1
+  ) {
+    const deterministicCalls = deterministicWorkflowCalls({
+      agent: input.agent,
+      requirements: workflowRequirements,
+      toolResults,
+      availableTools,
+    });
+    if (deterministicCalls.length === 0) {
+      break;
+    }
+
+    for (const call of deterministicCalls) {
       toolResults.push(
         await executeOneTool({
           agentRunId: input.agentRunId,
