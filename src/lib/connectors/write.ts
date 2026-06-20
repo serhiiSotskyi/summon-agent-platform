@@ -801,6 +801,16 @@ type GoogleWorkspaceCapability = {
   actionHref?: string;
 };
 
+function googleCloudProjectParam() {
+  const clientId = getEnv("GOOGLE_OAUTH_CLIENT_ID");
+  const projectNumber = clientId?.match(/^(\d+)-/)?.[1];
+  return projectNumber ? `?project=${encodeURIComponent(projectNumber)}` : "";
+}
+
+function googleCloudApiHref(apiId: string) {
+  return `https://console.cloud.google.com/apis/library/${apiId}${googleCloudProjectParam()}`;
+}
+
 async function probeGoogleApi(input: {
   accessToken: string;
   key: GoogleWorkspaceCapability["key"];
@@ -898,8 +908,7 @@ export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
         readyMessage: "Drive API is reachable for file search, copy, upload, and metadata.",
         disabledAction:
           "Enable the Google Drive API in the Google Cloud project used by this OAuth client.",
-        disabledActionHref:
-          "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=916083481034",
+        disabledActionHref: googleCloudApiHref("drive.googleapis.com"),
       },
       {
         accessToken,
@@ -910,8 +919,7 @@ export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
           "Docs API is reachable. The test document was intentionally fake, so this proves API availability without mutating files.",
         disabledAction:
           "Enable the Google Docs API in the Google Cloud project used by this OAuth client.",
-        disabledActionHref:
-          "https://console.developers.google.com/apis/api/docs.googleapis.com/overview?project=916083481034",
+        disabledActionHref: googleCloudApiHref("docs.googleapis.com"),
       },
       {
         accessToken,
@@ -922,8 +930,7 @@ export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
           "Sheets API is reachable. Native ranges, formulas, formatting, and chart operations can be used when tools support them.",
         disabledAction:
           "Enable the Google Sheets API in the Google Cloud project used by this OAuth client. Until then, agents use Drive CSV fallback for simple run-owned sheets.",
-        disabledActionHref:
-          "https://console.developers.google.com/apis/api/sheets.googleapis.com/overview?project=916083481034",
+        disabledActionHref: googleCloudApiHref("sheets.googleapis.com"),
       },
       {
         accessToken,
@@ -934,8 +941,7 @@ export async function getGoogleWorkspaceDiagnostics(workspaceId: string) {
           "Slides API is reachable. The test presentation was intentionally fake, so this proves API availability without mutating files.",
         disabledAction:
           "Enable the Google Slides API in the Google Cloud project used by this OAuth client.",
-        disabledActionHref:
-          "https://console.developers.google.com/apis/api/slides.googleapis.com/overview?project=916083481034",
+        disabledActionHref: googleCloudApiHref("slides.googleapis.com"),
       },
     ];
     const capabilities: GoogleWorkspaceCapability[] = [];

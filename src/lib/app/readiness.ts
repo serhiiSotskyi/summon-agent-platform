@@ -1,5 +1,6 @@
 import { resolveMx, resolveTxt } from "node:dns/promises";
 import type { Prisma } from "@prisma/client";
+import { getGoogleWorkspaceDiagnostics } from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 
@@ -198,15 +199,42 @@ async function connectorReadiness(workspaceId: string): Promise<ReadinessItem[]>
   ];
 
   if (connected.has("google-drive")) {
+    const diagnostics = await getGoogleWorkspaceDiagnostics(workspaceId);
+    const blockedCapabilities = diagnostics.capabilities.filter(
+      (capability) => capability.status !== "READY",
+    );
+    const firstActionableCapability = blockedCapabilities.find(
+      (capability) => capability.action,
+    );
+    const status: ReadinessStatus =
+      diagnostics.status === "READY"
+        ? "READY"
+        : diagnostics.status === "ERROR"
+          ? "BLOCKED"
+          : "DEGRADED";
+
     items.push({
       action:
-        "Open the Google Drive connector page for live Drive, Docs, Sheets, and Slides API probes.",
+        firstActionableCapability?.action ??
+        (status === "READY"
+          ? undefined
+          : "Open the Google Drive connector page for detailed Drive, Docs, Sheets, and Slides API probes."),
       detail:
-        "Google Drive is connected. Native Docs/Sheets/Slides API readiness is checked on the Google Drive connector page to keep this settings page fast.",
+        status === "READY"
+          ? "Drive, Docs, Sheets, and Slides APIs are reachable for run-owned Google output workflows."
+          : blockedCapabilities.length > 0
+            ? blockedCapabilities
+                .map(
+                  (capability) =>
+                    `${capability.name}: ${capability.message}`,
+                )
+                .join(" ")
+            : "Google Workspace API readiness could not be fully confirmed.",
       href:
+        firstActionableCapability?.actionHref ??
         `/app/connectors/google-drive?workspace=${workspaceId}`,
       key: "google-workspace-apis",
-      status: "DEGRADED",
+      status,
       title: "Native Google Workspace APIs",
     });
   }

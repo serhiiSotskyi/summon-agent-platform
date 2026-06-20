@@ -119,7 +119,7 @@ Pending invites currently affected:
 
 ### P1: Native Google Docs/Sheets API Readiness Needs Google Cloud Action
 
-The app has direct Google Cloud action links on the Google Drive connector diagnostics page. `gcloud` is not available in the local Codex environment, so API enablement cannot be completed from this machine right now.
+The app now runs live Drive, Docs, Sheets, and Slides probes from the Settings readiness panel and the Google Drive connector diagnostics page. When an API is disabled, the UI links directly to the matching Google Cloud API page for the OAuth project. `gcloud` is not available in the local Codex environment, so API enablement cannot be completed from this machine right now.
 
 Required action in Google Cloud:
 
