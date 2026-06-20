@@ -99,7 +99,10 @@ async function listGeneratedFiles(workspaceDir: string) {
 
     if (fileStat.size <= MAX_CAPTURED_FILE_BYTES) {
       try {
-        contentPreview = truncate(await readFile(filePath, "utf8"), 20_000);
+        const bytes = await readFile(filePath);
+        if (!bytes.includes(0)) {
+          contentPreview = truncate(bytes.toString("utf8"), 20_000);
+        }
       } catch {
         contentPreview = undefined;
       }
