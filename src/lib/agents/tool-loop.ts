@@ -1508,6 +1508,59 @@ function pushGenericDeleteObjectRequest(
   });
 }
 
+function stableSlidesObjectId(prefix: string, raw: string) {
+  let hash = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    hash = (hash * 31 + raw.charCodeAt(index)) >>> 0;
+  }
+  return `${prefix}_${hash.toString(36)}`.slice(0, 48);
+}
+
+function pushGenericTextBoxRequest(
+  requests: Record<string, unknown>[],
+  seen: Set<string>,
+  input: {
+    slideObjectId: string;
+    sourceObjectId: string;
+    size: unknown;
+    transform: unknown;
+    text: string;
+  },
+) {
+  const text = input.text.trim();
+  if (!input.slideObjectId || !input.sourceObjectId || !text) {
+    return;
+  }
+
+  const objectId = stableSlidesObjectId("summon_note", input.sourceObjectId);
+  const key = `textbox\u0000${objectId}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+
+  requests.push(
+    {
+      createShape: {
+        objectId,
+        shapeType: "TEXT_BOX",
+        elementProperties: {
+          pageObjectId: input.slideObjectId,
+          size: input.size,
+          transform: input.transform,
+        },
+      },
+    },
+    {
+      insertText: {
+        objectId,
+        insertionIndex: 0,
+        text,
+      },
+    },
+  );
+}
+
 function staleTermRegex(term: string) {
   const normalized = term.trim().toLowerCase();
   if (!normalized) {
@@ -1542,6 +1595,106 @@ function staleTermMatches(text: string, term: string) {
 
 function isLikelyMetricText(value: string) {
   return /^(?:[A-Z]{0,3}\$|£|\$|€)?\s?[\d,.]+(?:K|M)?%?$/i.test(value.trim());
+}
+
+function numericPath(value: unknown, path: string[]) {
+  let current: unknown = value;
+  for (const segment of path) {
+    current = asRecord(current)[segment];
+  }
+  const number = typeof current === "number" ? current : Number(current);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function renderedElementBox(element: Record<string, unknown>) {
+  const size = asRecord(element.size);
+  const transform = asRecord(element.transform);
+  const width = numericPath(size, ["width", "magnitude"]) ?? 0;
+  const height = numericPath(size, ["height", "magnitude"]) ?? 0;
+  const scaleX = numericPath(transform, ["scaleX"]) ?? 1;
+  const scaleY = numericPath(transform, ["scaleY"]) ?? 1;
+  const translateX = numericPath(transform, ["translateX"]) ?? 0;
+  const translateY = numericPath(transform, ["translateY"]) ?? 0;
+
+  return {
+    width: Math.abs(width * scaleX),
+    height: Math.abs(height * scaleY),
+    translateX,
+    translateY,
+    area: Math.abs(width * scaleX * height * scaleY),
+  };
+}
+
+function isLargeCopiedVisualElement(element: Record<string, unknown>) {
+  const type = asString(element.type);
+  if (!["image", "sheets_chart"].includes(type)) {
+    return false;
+  }
+
+  const box = renderedElementBox(element);
+  const isTopLogoLike = box.translateY < 900_000 && box.height < 900_000;
+  if (isTopLogoLike) {
+    return false;
+  }
+
+  return box.area > 1_750_000_000_000 && box.width > 1_200_000 && box.height > 900_000;
+}
+
+function largeCopiedVisualElements(slide: Record<string, unknown>) {
+  return asObjectArray(slide.pageElements).filter(isLargeCopiedVisualElement);
+}
+
+function monthlyTrendRows(reportData: Record<string, unknown>) {
+  const monthly = reportData.monthly_trends ?? reportData.monthly ?? reportData.trends;
+  const rows = Object.entries(asRecord(monthly)).map(([period, metrics]) => ({
+    period,
+    metrics: asRecord(metrics),
+  }));
+  return rows.sort((a, b) => a.period.localeCompare(b.period));
+}
+
+function visualPlaceholderTextForSlide(
+  reportData: Record<string, unknown>,
+  slideText: string,
+  slideTitle: string,
+) {
+  const metadata = reportMetadataFromArtifact(reportData);
+  const currency = metadata.currency || "GBP";
+  const trendRows = monthlyTrendRows(reportData);
+  const trendText = trendRows
+    .slice(0, 6)
+    .map(({ period, metrics }) => {
+      const cost = formatReportCurrency(metrics.cost ?? metrics.spend, currency);
+      const leads = formatIntegerMetric(metrics.sales_leads ?? metrics.leads);
+      const cpl = formatReportDecimalCurrency(metrics.cpl, currency);
+      const ctr = formatPercentMetric(metrics.ctr);
+      return `${period}: ${[cost, leads ? `${leads} leads` : "", cpl ? `${cpl} CPL` : "", ctr ? `${ctr} CTR` : ""]
+        .filter(Boolean)
+        .join(", ")}`;
+    })
+    .filter(Boolean);
+  const segment = slideSegmentForReportData(reportData, slideText, slideTitle);
+  const segmentText = segment
+    ? [
+        `${segment.label}:`,
+        `Spend ${formatReportCurrency(segment.metrics.cost ?? segment.metrics.spend, currency) || "not found"}`,
+        `Leads ${formatIntegerMetric(segment.metrics.sales_leads ?? segment.metrics.leads) || "not found"}`,
+        `CPL ${formatReportDecimalCurrency(segment.metrics.cpl, currency) || "not found"}`,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+
+  return [
+    "Chart placeholder - copied template visual removed.",
+    trendText.length > 0
+      ? `Structured trend data: ${trendText.join(" | ")}`
+      : "No chart image was generated for this run.",
+    segmentText,
+    "Use a chart-generation tool or attach chart assets to replace this placeholder.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function metricKeyForLabelText(value: string) {
@@ -1867,6 +2020,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       hasUnsupportedComparatorData(reportData) && unsupportedComparatorClaim(slideText);
     const placeholderWithCopiedTableContent =
       slideLooksLikePlaceholder(slideText) && hasSubstantiveTableContent(slide);
+    const copiedVisuals = largeCopiedVisualElements(slide);
     const values = reportMetricValuesForSlide({
       reportData,
       slideText,
@@ -1915,7 +2069,11 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       });
 
       pageElements
-        .filter((element) => ["table", "sheets_chart"].includes(asString(element.type)))
+        .filter(
+          (element) =>
+            ["table", "sheets_chart"].includes(asString(element.type)) ||
+            isLargeCopiedVisualElement(element),
+        )
         .map((element) => asString(element.objectId))
         .filter(Boolean)
         .forEach((objectId) => {
@@ -1937,6 +2095,18 @@ function genericReportDeckBatchRequests(results: unknown[]) {
         );
       }
       continue;
+    }
+
+    for (const visual of copiedVisuals) {
+      const objectId = asString(visual.objectId);
+      pushGenericDeleteObjectRequest(updateRequests, seen, objectId);
+      pushGenericTextBoxRequest(updateRequests, seen, {
+        slideObjectId,
+        sourceObjectId: objectId,
+        size: visual.size,
+        transform: visual.transform,
+        text: visualPlaceholderTextForSlide(reportData, slideText, slideTitle),
+      });
     }
 
     if (containsUnsupportedComparator) {
@@ -2188,6 +2358,18 @@ async function auditGoogleSlidesDeck(input: {
       if (hasSubstantiveTableContent(slide)) {
         reasons.push("placeholder slide still contains substantive copied table content.");
       }
+      if (largeCopiedVisualElements(slide).length > 0) {
+        reasons.push("placeholder slide still contains substantive copied visual/chart content.");
+      }
+    } else {
+      const copiedVisuals = largeCopiedVisualElements(slide);
+      if (copiedVisuals.length > 0 && asString(slide.classification) !== "section_divider") {
+        reasons.push(
+          `Contains ${copiedVisuals.length} unverified copied chart/image visual block${
+            copiedVisuals.length === 1 ? "" : "s"
+          } from the source template.`,
+        );
+      }
     }
 
     const hasBlockingReason = reasons.some(
@@ -2199,6 +2381,10 @@ async function auditGoogleSlidesDeck(input: {
           normalizedReason.includes("unsupported") ||
           normalizedReason.includes("malformed") ||
           normalizedReason.includes("copied table content") ||
+          normalizedReason.includes("copied visual") ||
+          normalizedReason.includes("copied chart") ||
+          normalizedReason.includes("unverified copied chart") ||
+          normalizedReason.includes("unverified copied image") ||
           normalizedReason.includes("kpi") ||
           normalizedReason.includes("metric")
         );
@@ -2242,7 +2428,7 @@ async function auditGoogleSlidesDeck(input: {
       ? "Add missing calculated KPI values from report_data.json to the deck or explain why they are not applicable."
       : "",
     blockingSlideIssues.length > 0
-      ? "Fix slides marked needs-human-review: use segment-level report_data values, remove unsupported YoY/comparator claims, or convert unsupported slides to placeholders."
+      ? "Fix slides marked needs-human-review: use segment-level report_data values, remove unsupported YoY/comparator claims, remove stale copied visual/chart evidence, or convert unsupported slides to placeholders."
       : "",
     "Use deck-map element IDs for slide-scoped edits instead of broad global text replacement.",
   ].filter(Boolean);
