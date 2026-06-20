@@ -2475,6 +2475,47 @@ function placeholderReason(reportData: Record<string, unknown>, slideText: strin
   return matching.slice(0, 2).join(" ") || missing.slice(0, 2).join(" ");
 }
 
+function compactPlaceholderReason(input: {
+  reportData: Record<string, unknown>;
+  slideText: string;
+  auditReasons?: string[];
+}) {
+  const auditText = (input.auditReasons ?? []).join(" ").toLowerCase();
+  if (auditText.includes("no segment-level trend data")) {
+    return "Segment-level trend data is not available in the uploaded file.";
+  }
+  if (auditText.includes("missing core segment values")) {
+    return "Required segment KPI values are not available in the uploaded file.";
+  }
+  if (auditText.includes("overall report metrics")) {
+    return "Only overall data was available; this slide needs segment-specific data.";
+  }
+  if (auditText.includes("header/title band") || auditText.includes("overflows")) {
+    return "This template section needs supporting planning or commentary input.";
+  }
+  if (auditText.includes("stale")) {
+    return "Source-template content could not be verified for this run.";
+  }
+
+  const reason = placeholderReason(input.reportData, input.slideText)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!reason) {
+    return "Supporting data was not provided for this run.";
+  }
+  if (/auction/i.test(reason)) {
+    return "Auction-insight export was not provided.";
+  }
+  if (/yoy|prior-year|prior year|comparison/i.test(reason)) {
+    return "Prior-year comparison data was not provided.";
+  }
+  if (/plans|next steps|client updates|human-provided context/i.test(reason)) {
+    return "Planning notes or client-update context was not provided.";
+  }
+
+  return reason.length > 120 ? `${reason.slice(0, 117).trim()}...` : reason;
+}
+
 function shouldPlaceholderReportSlide(reportData: Record<string, unknown>, slideText: string) {
   const missingText = reportMissingSections(reportData).join(" ").toLowerCase();
   const lowerSlideText = slideText.toLowerCase();
@@ -2516,12 +2557,11 @@ function placeholderTextForSlide(
   slideText: string,
   auditReasons: string[] = [],
 ) {
-  const reason =
-    auditReasons.filter(Boolean).slice(0, 2).join(" ") || placeholderReason(reportData, slideText);
+  const reason = compactPlaceholderReason({ reportData, slideText, auditReasons });
   return [
-    "Placeholder - supporting data was not provided for this run.",
+    "Placeholder - source data not provided.",
     reason ? `Reason: ${reason}` : "",
-    "Attach the relevant export, memory note, or planning input and rerun the agent to populate this slide.",
+    "Attach the missing export or context and rerun.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -2635,6 +2675,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
       const placeholderText = placeholderTextForSlide(reportData, slideText, auditReasons);
+      const forceDedicatedPlaceholderBox = auditRequiresPlaceholder || layoutIssues.length > 0;
       const shapeElements = textElements
         .filter((element) => asString(element.source) === "shape")
         .map((element) => ({
@@ -2664,17 +2705,9 @@ function genericReportDeckBatchRequests(results: unknown[]) {
           placeholderRequests,
           seen,
           element.objectId,
-          index === 0 ? placeholderText : "—",
+          forceDedicatedPlaceholderBox ? "—" : index === 0 ? placeholderText : "—",
         );
       });
-      if (placeholderTargets.length === 0) {
-        pushGenericPlaceholderTextBoxRequest(placeholderRequests, seen, {
-          slideObjectId,
-          sourceObjectId: `${slideObjectId}_placeholder`,
-          text: placeholderText,
-        });
-      }
-
       pageElements
         .filter((element) => {
           const objectId = asString(element.objectId);
@@ -2689,6 +2722,13 @@ function genericReportDeckBatchRequests(results: unknown[]) {
         .forEach((objectId) => {
           pushGenericDeleteObjectRequest(placeholderRequests, seen, objectId);
         });
+      if (forceDedicatedPlaceholderBox || placeholderTargets.length === 0) {
+        pushGenericPlaceholderTextBoxRequest(placeholderRequests, seen, {
+          slideObjectId,
+          sourceObjectId: `${slideObjectId}_placeholder`,
+          text: placeholderText,
+        });
+      }
 
       for (const term of staleTerms) {
         if (!staleTermMatches(slideText, term)) {
