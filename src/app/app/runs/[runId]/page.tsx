@@ -257,6 +257,72 @@ function jsonPreview(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
+function humanizeValue(value: string) {
+  return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function caveatText(record: OutputRecord) {
+  const mode = firstText(record, ["mode", "executionMode", "fallbackMode"]);
+  const note = firstText(record, ["note", "warning", "caveat"]);
+  const message = [mode ? `Mode: ${humanizeValue(mode)}.` : null, note]
+    .filter(Boolean)
+    .join(" ");
+
+  if (!message) {
+    return null;
+  }
+
+  const searchable = message.toLowerCase();
+  if (
+    searchable.includes("fallback") ||
+    searchable.includes("api is disabled") ||
+    searchable.includes("disabled") ||
+    searchable.includes("degraded")
+  ) {
+    return message;
+  }
+
+  return null;
+}
+
+function readRunCaveats(output: Prisma.JsonValue) {
+  const caveats = new Map<string, { title: string; message: string }>();
+
+  const addCaveat = (title: string, message: string | null) => {
+    if (!message) {
+      return;
+    }
+
+    const key = `${title}:${message}`;
+    if (!caveats.has(key)) {
+      caveats.set(key, { title, message });
+    }
+  };
+
+  readToolCalls(output).forEach((toolCall) => {
+    const result = toolCall.result;
+    if (toRecord(result)) {
+      addCaveat(toolCall.name, caveatText(result));
+    }
+  });
+
+  collectArtifactValues(output).forEach((artifact, index) => {
+    if (!toRecord(artifact)) {
+      return;
+    }
+
+    const label =
+      firstText(artifact, ["name", "title", "label", "filename", "fileName"]) ||
+      `Artifact ${index + 1}`;
+    addCaveat(label, caveatText(artifact));
+    if (toRecord(artifact.payload)) {
+      addCaveat(label, caveatText(artifact.payload));
+    }
+  });
+
+  return Array.from(caveats.values());
+}
+
 function readConnectorResults(output: Prisma.JsonValue) {
   if (
     output &&
@@ -373,6 +439,7 @@ export default async function RunDetailPage({
   const costMetadata = readCostMetadata(run.output);
   const toolCalls = readToolCalls(run.output);
   const artifacts = readArtifacts(run.output);
+  const runCaveats = readRunCaveats(run.output);
   const isActiveRun = run.status === "QUEUED" || run.status === "RUNNING";
 
   return (
@@ -446,6 +513,25 @@ export default async function RunDetailPage({
             {run.error ? (
               <div className="rounded-md border border-red-300/20 bg-red-300/10 p-4 text-sm leading-6 text-red-100">
                 {run.error}
+              </div>
+            ) : null}
+            {runCaveats.length > 0 ? (
+              <div className="rounded-md border border-amber-300/20 bg-amber-300/10 p-4">
+                <p className="text-xs uppercase tracking-[0.14em] text-amber-100/70">
+                  Run caveats
+                </p>
+                <div className="mt-3 space-y-3">
+                  {runCaveats.map((caveat) => (
+                    <div key={`${caveat.title}-${caveat.message}`}>
+                      <p className="text-sm font-medium text-amber-50">
+                        {caveat.title}
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-amber-100/80">
+                        {caveat.message}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
             {run.durationMs ? (
