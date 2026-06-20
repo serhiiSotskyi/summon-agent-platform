@@ -1247,6 +1247,36 @@ function shouldPlaceholderSegmentTrendSlide(
   );
 }
 
+function segmentAliasMatches(input: {
+  segment: ReturnType<typeof reportSegments>[number];
+  alias: string;
+  haystack: string;
+}) {
+  const { segment, alias, haystack } = input;
+  if (!alias) {
+    return false;
+  }
+  if (segment.category === "destination" && alias === "other") {
+    return /\bother destination\b/.test(haystack);
+  }
+  if (segment.category === "campaign" && alias === "other") {
+    return (
+      !/\bother destination\b/.test(haystack) &&
+      !/\bother updates?\b/.test(haystack) &&
+      /\bother (?:campaign|summary|trend|monthly|top)\b/.test(haystack)
+    );
+  }
+  if (segment.category === "campaign" && alias === "generic") {
+    return /\bgeneric\b/.test(haystack) || /\bgeneric (summary|trend|campaign)\b/.test(haystack);
+  }
+  if (segment.category === "campaign" && alias === "performance") {
+    return /\bperformance max\b/.test(haystack);
+  }
+  return new RegExp(`(^| )${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`).test(
+    haystack,
+  );
+}
+
 function slideSegmentForReportData(
   reportData: Record<string, unknown>,
   slideText: string,
@@ -1260,24 +1290,16 @@ function slideSegmentForReportData(
     return null;
   }
 
-  const segmentCandidates = reportSegments(reportData).filter((segment) =>
-    segment.aliases.some((alias) => {
-      if (!alias) {
-        return false;
-      }
-      if (segment.category === "destination" && alias === "other") {
-        return /\bother destination\b/.test(headingText);
-      }
-      if (segment.category === "campaign" && alias === "generic") {
-        return /\bgeneric\b/.test(title) || /\bgeneric (summary|trend|campaign)\b/.test(headingText);
-      }
-      if (segment.category === "campaign" && alias === "performance") {
-        return /\bperformance max\b/.test(headingText);
-      }
-      return new RegExp(`(^| )${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`).test(
-        headingText,
-      );
-    }),
+  const segments = reportSegments(reportData);
+  const titleCandidates = segments.filter((segment) =>
+    segment.aliases.some((alias) => segmentAliasMatches({ segment, alias, haystack: title })),
+  );
+  if (titleCandidates.length > 0) {
+    return titleCandidates.sort((a, b) => b.label.length - a.label.length).at(0) ?? null;
+  }
+
+  const segmentCandidates = segments.filter((segment) =>
+    segment.aliases.some((alias) => segmentAliasMatches({ segment, alias, haystack: headingText })),
   );
 
   return segmentCandidates.sort((a, b) => b.label.length - a.label.length).at(0) ?? null;
@@ -1709,17 +1731,25 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
       const placeholderText = placeholderTextForSlide(reportData, slideText);
-      const placeholderElements = textElements
+      const shapeElements = textElements
         .filter((element) => asString(element.source) === "shape")
         .map((element) => ({
           objectId: asString(element.objectId),
           text: asString(element.text),
         }))
+        .filter((element) => element.objectId && element.text.trim().length > 0 && element.text.trim() !== "—");
+      const placeholderElements = shapeElements
         .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle))
-        .filter((element) => element.objectId && element.text.trim().length > 0 && element.text.trim() !== "—")
         .sort((a, b) => b.text.length - a.text.length);
+      const placeholderTargets =
+        placeholderElements.length > 0
+          ? placeholderElements
+          : shapeElements.filter(
+              (element) =>
+                !/summon digital|confidential|prepared by summon|wendy wu tours \|/i.test(element.text),
+            );
 
-      placeholderElements.slice(0, 80).forEach((element, index) => {
+      placeholderTargets.slice(0, 80).forEach((element, index) => {
         pushGenericTextElementUpdate(
           placeholderRequests,
           seen,
@@ -1813,15 +1843,23 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       issue.includes("missing core segment values"),
     );
     if (segment && missingSegmentCore && !isSegmentTrendSlide(slideText, slideTitle)) {
-      const fallbackElement = textElements
+      const shapeElements = textElements
         .filter((element) => asString(element.source) === "shape")
         .map((element) => ({
           objectId: asString(element.objectId),
           text: asString(element.text),
         }))
-        .filter((element) => element.objectId && !shouldPreservePlaceholderElement(element.text, slideTitle))
+        .filter((element) => element.objectId && element.text.trim().length > 0 && element.text.trim() !== "—");
+      const fallbackElement = shapeElements
+        .filter((element) => !shouldPreservePlaceholderElement(element.text, slideTitle))
         .sort((a, b) => b.text.length - a.text.length)
-        .at(0);
+        .at(0) ??
+        shapeElements
+          .filter(
+            (element) =>
+              !/summon digital|confidential|prepared by summon|wendy wu tours \|/i.test(element.text),
+          )
+          .at(0);
       if (fallbackElement) {
         pushGenericTextElementUpdate(updateRequests, seen, fallbackElement.objectId, commentary);
       }
