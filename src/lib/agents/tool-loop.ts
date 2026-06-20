@@ -2609,14 +2609,15 @@ function pushGenericGeneratedReportSlideRequests(
 
   shapeElements
     .filter((element) => element.objectId !== titleTarget?.objectId)
-    .filter((element) => {
-      if (shouldPreservePlaceholderElement(element.text, "", input.staleTerms)) {
-        return false;
-      }
-      const box = textElementBox(asRecord(element));
-      return Boolean(box && box.translateY > 820_000 && box.translateY < SLIDE_HEIGHT_EMU - 620_000);
-    })
-    .slice(0, 16)
+    .filter((element) =>
+      shouldClearRegeneratedReportTextElement({
+        element,
+        reportData: input.reportData,
+        staleTerms: input.staleTerms,
+        generatedTitle: content.title,
+      }),
+    )
+    .slice(0, 60)
     .forEach((element) => {
       pushGenericTextElementUpdate(requests, seen, element.objectId, "—");
     });
@@ -2678,6 +2679,48 @@ function pushGenericGeneratedReportSlideRequests(
       pushGenericSlideReplacement(requests, seen, input.slideObjectId, term, "—");
     }
   }
+}
+
+function shouldClearRegeneratedReportTextElement(input: {
+  element: {
+    objectId: string;
+    text: string;
+    size: unknown;
+    transform: unknown;
+  };
+  reportData: Record<string, unknown>;
+  staleTerms: string[];
+  generatedTitle: string;
+}) {
+  const text = input.element.text.trim();
+  if (!input.element.objectId || !text || text === "—") {
+    return false;
+  }
+  if (input.staleTerms.some((term) => staleTermMatches(text, term))) {
+    return true;
+  }
+  if (hasUnsupportedComparatorData(input.reportData) && unsupportedComparatorClaim(text)) {
+    return true;
+  }
+  if (isLikelyMetricText(text) || slideLooksLikePlaceholder(text) || malformedPlaceholderText(text)) {
+    return true;
+  }
+
+  const box = textElementBox(asRecord(input.element));
+  if (!box) {
+    return !shouldPreservePlaceholderElement(text, input.generatedTitle, input.staleTerms);
+  }
+
+  const isFooter = box.translateY > SLIDE_HEIGHT_EMU - 760_000;
+  const isHeader = box.translateY < HEADER_BAND_MAX_Y_EMU;
+  if (
+    (isHeader || isFooter) &&
+    shouldPreservePlaceholderElement(text, input.generatedTitle, input.staleTerms)
+  ) {
+    return false;
+  }
+
+  return box.translateY > HEADER_BAND_MAX_Y_EMU && box.translateY < SLIDE_HEIGHT_EMU - 520_000;
 }
 
 function metricKeyForLabelText(value: string) {
