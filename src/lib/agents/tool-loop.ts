@@ -2060,6 +2060,60 @@ function largeCopiedVisualElements(slide: Record<string, unknown>) {
   return asObjectArray(slide.pageElements).filter(isLargeCopiedVisualElement);
 }
 
+function runGeneratedChartElements(slide: Record<string, unknown>) {
+  return asObjectArray(slide.pageElements).filter((element) =>
+    asString(element.objectId).startsWith("summon_chart_"),
+  );
+}
+
+function chartRepairRequired(reasons: string[]) {
+  return reasons.some((reason) =>
+    /generated chart|monthly values|duplicate generated chart/i.test(reason),
+  );
+}
+
+function syntheticChartVisualFromElements(
+  slideObjectId: string,
+  elements: Record<string, unknown>[],
+) {
+  const boxes = elements.map(renderedElementBox).filter((box) => box.area > 0);
+  if (boxes.length === 0) {
+    return {
+      objectId: `${slideObjectId}_chart_repair`,
+      size: {
+        width: { magnitude: 6_600_000, unit: "EMU" },
+        height: { magnitude: 2_450_000, unit: "EMU" },
+      },
+      transform: {
+        scaleX: 1,
+        scaleY: 1,
+        translateX: 3_750_000,
+        translateY: 2_050_000,
+        unit: "EMU",
+      },
+    };
+  }
+
+  const left = Math.min(...boxes.map((box) => box.translateX));
+  const top = Math.min(...boxes.map((box) => box.translateY));
+  const right = Math.max(...boxes.map((box) => box.translateX + box.width));
+  const bottom = Math.max(...boxes.map((box) => box.translateY + box.height));
+  return {
+    objectId: `${slideObjectId}_chart_repair`,
+    size: {
+      width: { magnitude: Math.max(1, right - left), unit: "EMU" },
+      height: { magnitude: Math.max(1, bottom - top), unit: "EMU" },
+    },
+    transform: {
+      scaleX: 1,
+      scaleY: 1,
+      translateX: left,
+      translateY: top,
+      unit: "EMU",
+    },
+  };
+}
+
 function monthlyTrendRows(reportData: Record<string, unknown>) {
   const monthly = reportData.monthly_trends ?? reportData.monthly ?? reportData.trends;
   const rows = Object.entries(asRecord(monthly)).map(([period, metrics]) => ({
@@ -2520,12 +2574,21 @@ function generatedChartMetricIssues(input: {
   ] as const;
 
   for (const [metricKey, label] of chartKeys) {
-    const chartTitlePattern = new RegExp(
-      `(?:${label}\\s+by month|Monthly\\s+${label})\\s+(?:- |\\()?generated from uploaded data`,
-      "i",
-    );
-    if (!chartTitlePattern.test(input.slideText)) {
+    const chartTitleMatches =
+      input.slideText.match(
+        new RegExp(
+          `(?:${label}\\s+by month|Monthly\\s+${label})\\s+(?:- |\\()?generated from uploaded data`,
+          "gi",
+        ),
+      ) ?? [];
+    if (chartTitleMatches.length === 0) {
       continue;
+    }
+
+    if (chartTitleMatches.length > 1) {
+      issues.push(
+        `${label} generated chart appears ${chartTitleMatches.length} times on the same slide; keep one complete generated chart and remove duplicate chart fragments.`,
+      );
     }
 
     const expectedRows = genericTrendChartRows(input.reportData, metricKey);
@@ -2817,6 +2880,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       slideLooksLikePlaceholder(slideText) && hasSubstantiveTableContent(slide);
     const layoutIssues = textLayoutIssuesForSlide(slide);
     const copiedVisuals = largeCopiedVisualElements(slide);
+    const generatedChartElements = runGeneratedChartElements(slide);
     const values = reportMetricValuesForSlide({
       reportData,
       slideText,
@@ -3131,7 +3195,24 @@ function genericReportDeckBatchRequests(results: unknown[]) {
       }
     }
 
-    for (const [visualIndex, visual] of copiedVisuals
+    const shouldRepairGeneratedCharts = chartRepairRequired(auditReasons);
+    if (copiedVisuals.length > 0 || shouldRepairGeneratedCharts) {
+      generatedChartElements
+        .map((element) => asString(element.objectId))
+        .filter(Boolean)
+        .forEach((objectId) => {
+          pushGenericDeleteObjectRequest(updateRequests, seen, objectId);
+        });
+    }
+
+    const chartTargets =
+      copiedVisuals.length > 0
+        ? copiedVisuals
+        : shouldRepairGeneratedCharts && generatedChartElements.length > 0
+          ? [syntheticChartVisualFromElements(slideObjectId, generatedChartElements)]
+          : [];
+
+    for (const [visualIndex, visual] of chartTargets
       .slice()
       .sort(
         (a, b) =>
