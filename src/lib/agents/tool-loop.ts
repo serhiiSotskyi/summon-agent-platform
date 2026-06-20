@@ -1745,15 +1745,49 @@ function pushGenericPlaceholderTextBoxRequest(
     text: string;
   },
 ) {
-  pushGenericPositionedTextRequest(requests, seen, {
-    objectId: stableSlidesObjectId("summon_placeholder", input.sourceObjectId),
+  const baseId = stableSlidesObjectId("summon_placeholder", input.sourceObjectId);
+  const lines = input.text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const reason = lines
+    .filter((line) => !/^placeholder\b/i.test(line))
+    .join(" ")
+    .replace(/^Reason:\s*/i, "")
+    .trim();
+  const note = reason || "Supporting source data was not provided for this run.";
+
+  pushGenericRectangleRequest(requests, seen, {
+    objectId: `${baseId}_bg`.slice(0, 48),
     slideObjectId: input.slideObjectId,
     x: 1_120_000,
-    y: 1_480_000,
+    y: 4_185_000,
     width: 6_900_000,
-    height: 1_850_000,
-    text: input.text,
-    fontSizePt: 14,
+    height: 430_000,
+    color: { red: 0.99, green: 0.94, blue: 0.94 },
+  });
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: `${baseId}_title`.slice(0, 48),
+    slideObjectId: input.slideObjectId,
+    x: 1_260_000,
+    y: 4_255_000,
+    width: 1_250_000,
+    height: 150_000,
+    text: "Review required",
+    fontSizePt: 8,
+    bold: true,
+    color: { red: 0.62, green: 0.06, blue: 0.1 },
+  });
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: `${baseId}_body`.slice(0, 48),
+    slideObjectId: input.slideObjectId,
+    x: 2_470_000,
+    y: 4_250_000,
+    width: 5_300_000,
+    height: 190_000,
+    text: note.length > 155 ? `${note.slice(0, 152).trim()}...` : note,
+    fontSizePt: 7,
+    color: { red: 0.23, green: 0.23, blue: 0.24 },
   });
 }
 
