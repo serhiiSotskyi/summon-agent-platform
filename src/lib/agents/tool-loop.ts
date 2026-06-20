@@ -1867,6 +1867,7 @@ const SLIDE_WIDTH_EMU = 9_144_000;
 const SLIDE_HEIGHT_EMU = 5_143_500;
 const EMU_PER_INCH = 914_400;
 const HEADER_BAND_MAX_Y_EMU = 760_000;
+const GENERIC_REPORT_BATCH_REQUEST_LIMIT = 720;
 
 type TextLayoutIssue = {
   objectId: string;
@@ -3151,7 +3152,10 @@ function genericReportDeckBatchRequests(results: unknown[]) {
     }
   }
 
-  return [...placeholderRequests, ...updateRequests].slice(0, 360);
+  return [...placeholderRequests, ...updateRequests].slice(
+    0,
+    GENERIC_REPORT_BATCH_REQUEST_LIMIT,
+  );
 }
 
 function staleTermsForTarget(input: {
