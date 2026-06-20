@@ -116,6 +116,8 @@ Inside the app, open **Help** from the sidebar. The guide covers:
 - reviewing run evidence, artifacts, costs, and approvals
 - QBR/report, budget pacing, and client research task patterns
 
+For the current production readiness state, see [docs/readiness-status.md](docs/readiness-status.md).
+
 ## Current External Setup Notes
 
 - Resend DNS records are present, but invite email delivery depends on Resend domain verification completing in the Resend dashboard.
