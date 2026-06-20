@@ -1,9 +1,13 @@
 import { Prisma, type Agent, type AgentFile } from "@prisma/client";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   batchUpdateGoogleDoc,
   batchUpdateGoogleSlides,
   copyGoogleDriveFile,
   createGoogleDoc,
+  createGoogleDriveBinaryFile,
   createGoogleDriveTextFile,
   createGoogleSheet,
   createNotionPage,
@@ -3340,6 +3344,14 @@ function schemaForTool(tool: GenericAgentToolKey) {
         content: "text content",
         mimeType: "text/plain, text/csv, application/json, or text/markdown",
       };
+    case "google.drive.uploadArtifact":
+      return {
+        artifactName:
+          "sandbox generated file name or artifact://relative/path.png from a prior python.run",
+        artifactId: "optional sandbox artifact id from a prior python.run",
+        name: "optional output file name in Drive",
+        mimeType: "optional MIME type, inferred from file extension when omitted",
+      };
     case "google.docs.createDocument":
       return {
         title: "new Google Doc title",
@@ -3469,6 +3481,7 @@ function buildPlannerPrompt(input: {
     "For spreadsheet/table outputs, use google.sheets.createSpreadsheet to create a run-owned native Google Sheet, seed rows when available, then use google.sheets.updateRange/readRange for follow-up edits and verification.",
     "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
     "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
+    "When Python creates chart/image files such as PNG, JPG, WebP, GIF, or SVG, upload them with google.drive.uploadArtifact. Then insert them into copied Slides with google.slides.batchUpdate createImage using the upload result downloadUrl, or reference the generated file as artifact://relative/path.png inside the batchUpdate request.",
     "Do not treat a visual template as trusted content. Replace stale source-market labels, copied commentary, and old KPI claims, or explicitly mark the slide as a human-editable placeholder.",
     "Python/report agents should produce a structured report_data.json artifact where possible: metadata, overall_kpis, trends, segment breakdowns, missing sections, and placeholder recommendations.",
     "For report decks, run google.slides.auditDeck after writing the copied deck. If it flags stale source-market text or missing KPI values, fix the deck and audit again.",
@@ -3649,6 +3662,194 @@ function requireCreatedGoogleFile(state: RuntimeState, fileId: string, toolName:
   throw new Error(message);
 }
 
+function mimeTypeForArtifactName(name: string) {
+  const extension = path.extname(name).toLowerCase();
+  switch (extension) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    case ".svg":
+      return "image/svg+xml";
+    case ".json":
+      return "application/json";
+    case ".csv":
+      return "text/csv";
+    case ".md":
+      return "text/markdown";
+    case ".txt":
+      return "text/plain";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function normalizeArtifactRef(value: string) {
+  return value.replace(/^artifact:\/\//i, "").replace(/^sandbox:\/\//i, "").trim();
+}
+
+async function findSandboxArtifact(input: {
+  agentRunId: string;
+  artifactId?: string;
+  artifactName?: string;
+}) {
+  const db = getDb();
+  const artifactId = input.artifactId?.trim();
+  const artifactName = input.artifactName ? normalizeArtifactRef(input.artifactName) : "";
+  if (!artifactId && !artifactName) {
+    throw new Error("A sandbox artifact id or name is required.");
+  }
+  const artifact = artifactId
+    ? await db.agentArtifact.findFirst({
+        where: {
+          id: artifactId,
+          agentRunId: input.agentRunId,
+          artifactType: "sandbox_file",
+        },
+      })
+    : await db.agentArtifact.findFirst({
+        where: {
+          agentRunId: input.agentRunId,
+          artifactType: "sandbox_file",
+          OR: [
+            { name: artifactName },
+            { name: { endsWith: `/${artifactName}` } },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+  if (!artifact?.location) {
+    throw new Error(
+      `Sandbox artifact not found for this run: ${artifactId || artifactName || "missing artifact reference"}.`,
+    );
+  }
+
+  const safeRoot = path.resolve(os.tmpdir(), "summon-agent-runs", input.agentRunId);
+  const resolvedLocation = path.resolve(artifact.location);
+  if (
+    resolvedLocation !== safeRoot &&
+    !resolvedLocation.startsWith(`${safeRoot}${path.sep}`)
+  ) {
+    throw new Error("Sandbox artifact path is outside this run workspace.");
+  }
+
+  return {
+    id: artifact.id,
+    name: artifact.name,
+    location: resolvedLocation,
+    mimeType: artifact.mimeType,
+  };
+}
+
+async function uploadSandboxArtifactToDrive(input: {
+  agentRunId: string;
+  toolCallId: string;
+  workspaceId: string;
+  state: RuntimeState;
+  artifactId?: string;
+  artifactName?: string;
+  outputName?: string;
+  mimeType?: string;
+}) {
+  const source = await findSandboxArtifact({
+    agentRunId: input.agentRunId,
+    artifactId: input.artifactId,
+    artifactName: input.artifactName,
+  });
+  const content = await readFile(source.location);
+  const outputName = input.outputName?.trim() || path.basename(source.name);
+  const mimeType =
+    input.mimeType?.trim() ||
+    (source.mimeType && source.mimeType !== "text/plain" ? source.mimeType : "") ||
+    mimeTypeForArtifactName(outputName || source.name);
+  const uploaded = await createGoogleDriveBinaryFile({
+    workspaceId: input.workspaceId,
+    name: outputName,
+    content,
+    mimeType,
+    makePublic: true,
+  });
+
+  input.state.createdGoogleFileIds.add(uploaded.fileId);
+  input.state.createdGoogleFiles.push(uploaded);
+
+  const artifact = artifactOutput(
+    await createArtifact({
+      agentRunId: input.agentRunId,
+      toolCallId: input.toolCallId,
+      artifactType: "google_drive_file",
+      name: uploaded.fileName,
+      location: uploaded.webViewLink ?? uploaded.downloadUrl,
+      mimeType: uploaded.mimeType,
+      payload: {
+        ...uploaded,
+        sourceArtifactId: source.id,
+        sourceArtifactName: source.name,
+      },
+    }),
+  );
+
+  return {
+    uploaded,
+    artifact,
+  };
+}
+
+function replaceArtifactRefsDeep(
+  value: unknown,
+  resolver: (artifactName: string) => string | null,
+): unknown {
+  if (typeof value === "string") {
+    const normalized = normalizeArtifactRef(value);
+    return value.startsWith("artifact://") || value.startsWith("sandbox://")
+      ? resolver(normalized) ?? value
+      : value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceArtifactRefsDeep(item, resolver));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+        key,
+        replaceArtifactRefsDeep(child, resolver),
+      ]),
+    );
+  }
+
+  return value;
+}
+
+function collectArtifactRefs(value: unknown, refs = new Set<string>()) {
+  if (typeof value === "string") {
+    if (value.startsWith("artifact://") || value.startsWith("sandbox://")) {
+      refs.add(normalizeArtifactRef(value));
+    }
+    return refs;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectArtifactRefs(item, refs));
+    return refs;
+  }
+
+  if (value && typeof value === "object") {
+    Object.values(value as Record<string, unknown>).forEach((child) =>
+      collectArtifactRefs(child, refs),
+    );
+  }
+
+  return refs;
+}
+
 async function executeOneTool(input: {
   agentRunId: string;
   workspaceId: string;
@@ -3734,7 +3935,7 @@ async function executeOneTool(input: {
               artifactType: "sandbox_file",
               name: file.relativePath,
               location: file.path,
-              mimeType: "text/plain",
+              mimeType: mimeTypeForArtifactName(file.relativePath),
               payload: {
                 sizeBytes: file.sizeBytes,
                 contentPreview: file.contentPreview,
@@ -3820,6 +4021,24 @@ async function executeOneTool(input: {
       );
       artifacts.push(artifact);
       result = created;
+    }
+
+    if (toolName === "google.drive.uploadArtifact") {
+      const uploaded = await uploadSandboxArtifactToDrive({
+        agentRunId: input.agentRunId,
+        toolCallId: toolCall.id,
+        workspaceId: input.workspaceId,
+        state: input.state,
+        artifactId: asString(request.artifactId),
+        artifactName:
+          asString(request.artifactName) ||
+          asString(request.path) ||
+          asString(request.name),
+        outputName: asString(request.outputName) || asString(request.name),
+        mimeType: asString(request.mimeType),
+      });
+      artifacts.push(uploaded.artifact);
+      result = uploaded.uploaded;
     }
 
     if (toolName === "google.docs.createDocument") {
@@ -4116,11 +4335,37 @@ async function executeOneTool(input: {
     if (toolName === "google.slides.batchUpdate") {
       const presentationId = parseGoogleFileId(asString(request.presentationId));
       requireCreatedGoogleFile(input.state, presentationId, toolName);
+      const artifactRefs = Array.from(collectArtifactRefs(request.requests));
+      const artifactUrlByName = new Map<string, string>();
+      for (const artifactName of artifactRefs) {
+        const uploaded = await uploadSandboxArtifactToDrive({
+          agentRunId: input.agentRunId,
+          toolCallId: toolCall.id,
+          workspaceId: input.workspaceId,
+          state: input.state,
+          artifactName,
+          outputName: path.basename(artifactName),
+        });
+        artifacts.push(uploaded.artifact);
+        artifactUrlByName.set(artifactName, uploaded.uploaded.downloadUrl);
+      }
+      const requests = replaceArtifactRefsDeep(
+        asObjectArray(request.requests),
+        (artifactName) => artifactUrlByName.get(artifactName) ?? null,
+      );
       result = await batchUpdateGoogleSlides({
         workspaceId: input.workspaceId,
         presentationId,
-        requests: asObjectArray(request.requests),
+        requests: asObjectArray(requests),
       });
+      if (artifactUrlByName.size > 0) {
+        result = {
+          ...asRecord(result),
+          artifactImagesResolved: Array.from(artifactUrlByName.entries()).map(
+            ([artifactName, url]) => ({ artifactName, url }),
+          ),
+        };
+      }
     }
 
     if (toolName === "google.slides.auditDeck") {

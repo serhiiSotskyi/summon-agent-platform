@@ -78,6 +78,15 @@ type GoogleSlidesImportInput = {
   connectorType?: string;
 };
 
+type GoogleDriveBinaryUploadInput = {
+  workspaceId: string;
+  name: string;
+  content: Buffer | Uint8Array | ArrayBuffer | string;
+  mimeType: string;
+  parentFolderId?: string | null;
+  makePublic?: boolean;
+};
+
 type GoogleSlidesImportResult = {
   fileId: string;
   fileName: string;
@@ -121,7 +130,11 @@ const GOOGLE_SCOPE_WARNING =
 const NOTION_API_VERSION = "2022-06-28";
 const MAX_BLOCK_TEXT_LENGTH = 1800;
 
-function normalizeBinaryData(input: GoogleSlidesImportInput["pptx"]) {
+function normalizeBinaryData(input: Buffer | Uint8Array | ArrayBuffer | string) {
+  if (typeof input === "string") {
+    return Buffer.from(input, "utf8");
+  }
+
   if (input instanceof ArrayBuffer) {
     return Buffer.from(input);
   }
@@ -776,7 +789,112 @@ async function googleCredentialAndToken(workspaceId: string) {
 }
 
 function googleFileFields() {
-  return "id,name,mimeType,webViewLink";
+  return "id,name,mimeType,webViewLink,webContentLink";
+}
+
+export async function createGoogleDriveBinaryFile(
+  input: GoogleDriveBinaryUploadInput,
+): Promise<
+  GoogleDriveFileResult & {
+    webContentLink: string | null;
+    downloadUrl: string;
+    publicPermissionCreated: boolean;
+  }
+> {
+  const { accessToken } = await googleCredentialAndToken(input.workspaceId);
+  const fileData = normalizeBinaryData(input.content);
+  const fileName = input.name.trim() || "generated-artifact";
+  const metadata = {
+    name: fileName,
+    mimeType: input.mimeType,
+    ...(input.parentFolderId ? { parents: [input.parentFolderId] } : {}),
+  };
+  const { boundary, body } = toMultipartBody([
+    {
+      headers: [
+        'Content-Disposition: form-data; name="metadata"',
+        "Content-Type: application/json; charset=UTF-8",
+      ].join("\r\n"),
+      body: JSON.stringify(metadata),
+    },
+    {
+      headers: [
+        `Content-Disposition: form-data; name="file"; filename="${fileName.replace(/"/g, "")}"`,
+        `Content-Type: ${input.mimeType}`,
+      ].join("\r\n"),
+      body: fileData,
+    },
+  ]);
+
+  const response = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${encodeURIComponent(
+      googleFileFields(),
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    },
+  );
+  const payload = (await readJson(response)) as
+    | {
+        id?: string;
+        name?: string;
+        mimeType?: string;
+        webViewLink?: string;
+        webContentLink?: string;
+      }
+    | null;
+
+  if (!response.ok || !payload?.id) {
+    const message = await apiErrorMessage("Google Drive artifact upload", response, payload);
+    throw new Error(message);
+  }
+
+  let publicPermissionCreated = false;
+  if (input.makePublic ?? true) {
+    const permissionResponse = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        payload.id,
+      )}/permissions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          role: "reader",
+          type: "anyone",
+        }),
+      },
+    );
+    const permissionPayload = await readJson(permissionResponse);
+    if (!permissionResponse.ok) {
+      const message = await apiErrorMessage(
+        "Google Drive artifact permission",
+        permissionResponse,
+        permissionPayload,
+      );
+      throw new Error(message);
+    }
+    publicPermissionCreated = true;
+  }
+
+  return {
+    fileId: payload.id,
+    fileName: payload.name ?? fileName,
+    mimeType: payload.mimeType ?? input.mimeType,
+    webViewLink: payload.webViewLink ?? null,
+    webContentLink: payload.webContentLink ?? null,
+    downloadUrl: `https://drive.google.com/uc?export=download&id=${encodeURIComponent(
+      payload.id,
+    )}`,
+    publicPermissionCreated,
+  };
 }
 
 async function getGoogleDriveMetadata(input: {

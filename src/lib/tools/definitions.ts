@@ -21,6 +21,13 @@ export const GENERIC_AGENT_TOOLS = [
     category: "Google Drive",
   },
   {
+    key: "google.drive.uploadArtifact",
+    name: "Upload generated artifact",
+    summary:
+      "Upload a sandbox-generated file, such as a chart image or report asset, to Google Drive so it can be linked or inserted into generated outputs.",
+    category: "Google Drive",
+  },
+  {
     key: "google.docs.createDocument",
     name: "Create Google Doc",
     summary:
