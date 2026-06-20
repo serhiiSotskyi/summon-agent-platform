@@ -151,11 +151,130 @@ function compactText(value: unknown, maxLength = 3000) {
   return `${value.slice(0, maxLength)}\n...[truncated ${value.length - maxLength} chars]`;
 }
 
-function compactGeneratedFileForPrompt(value: unknown) {
+type ToolResultFocus = {
+  slideObjectIds: Set<string>;
+};
+
+function latestToolResultFocus(results: unknown[]): ToolResultFocus | undefined {
+  const latestAudit = successfulToolResults(results)
+    .filter((result) => result.toolName === "google.slides.auditDeck")
+    .at(-1);
+  const auditResult = asRecord(latestAudit?.result);
+  const blockingSlideIssues = asObjectArray(auditResult.blockingSlideIssues);
+  const slideObjectIds = new Set(
+    blockingSlideIssues.map((issue) => asString(issue.slideObjectId)).filter(Boolean),
+  );
+
+  return slideObjectIds.size > 0 ? { slideObjectIds } : undefined;
+}
+
+function compactDeckMapPayload(payload: Record<string, unknown>, focus?: ToolResultFocus) {
+  const slides = asObjectArray(payload.slides);
+  const focusedSlides =
+    focus && focus.slideObjectIds.size > 0
+      ? slides.filter((slide) => focus.slideObjectIds.has(asString(slide.slideObjectId)))
+      : slides.slice(0, 8);
+
+  return {
+    title: payload.title,
+    presentationId: payload.presentationId,
+    slideCount: slides.length,
+    slides: focusedSlides.map((slide) => ({
+      slideIndex: slide.slideIndex,
+      slideObjectId: slide.slideObjectId,
+      classification: slide.classification,
+      titleCandidate: compactText(slide.titleCandidate, 180),
+      textElements: asObjectArray(slide.textElements)
+        .slice(0, 10)
+        .map((element) => ({
+          objectId: element.objectId,
+          source: element.source,
+          rowIndex: element.rowIndex,
+          columnIndex: element.columnIndex,
+          text: compactText(element.text, 220),
+        })),
+      pageElements: asObjectArray(slide.pageElements)
+        .slice(0, 10)
+        .map((element) => ({
+          objectId: element.objectId,
+          type: element.type,
+          shapeType: element.shapeType,
+          text: compactText(element.text, 140),
+          table: element.table
+            ? {
+                rowCount: asRecord(element.table).rowCount,
+                columnCount: asRecord(element.table).columnCount,
+              }
+            : null,
+        })),
+    })),
+  };
+}
+
+function compactAuditPayload(payload: Record<string, unknown>) {
+  return {
+    presentationId: payload.presentationId,
+    title: payload.title,
+    passed: payload.passed,
+    score: payload.score,
+    staleReferences: asObjectArray(payload.staleReferences).slice(0, 12),
+    missingExpectedValues: asStringArray(payload.missingExpectedValues).slice(0, 12),
+    blockingSlideIssues: asObjectArray(payload.blockingSlideIssues).slice(0, 20),
+    recommendations: asStringArray(payload.recommendations).slice(0, 8),
+  };
+}
+
+function compactParsedJsonForPrompt(name: string, value: unknown) {
+  const parsed = asRecord(value);
+  if (Object.keys(parsed).length === 0) {
+    return undefined;
+  }
+
+  if (name.includes("report_data") || name.includes("metrics")) {
+    return {
+      metadata: parsed.metadata,
+      overall_kpis: parsed.overall_kpis ?? parsed.overall,
+      campaign_type_breakdowns: parsed.campaign_type_breakdowns,
+      destination_breakdowns: parsed.destination_breakdowns,
+      missing_data_sections: parsed.missing_data_sections,
+      recommended_placeholder_slides: parsed.recommended_placeholder_slides,
+    };
+  }
+
+  return parsed;
+}
+
+function compactGeneratedFileForPrompt(value: unknown, focus?: ToolResultFocus) {
   const file = asRecord(value);
   const payload = asRecord(file.payload);
   const name = asString(file.name, "artifact");
   const mimeType = asString(file.mimeType);
+  const artifactType = asString(file.type, asString(file.artifactType));
+
+  if (artifactType === "deck_map" || name.toLowerCase() === "deck_map.json") {
+    return {
+      id: file.id,
+      type: file.type,
+      name,
+      location: file.location,
+      mimeType: file.mimeType,
+      status: file.status,
+      payload: compactDeckMapPayload(payload, focus),
+    };
+  }
+
+  if (artifactType === "deck_audit" || name.toLowerCase() === "deck_audit.json") {
+    return {
+      id: file.id,
+      type: file.type,
+      name,
+      location: file.location,
+      mimeType: file.mimeType,
+      status: file.status,
+      payload: compactAuditPayload(payload),
+    };
+  }
+
   const preview = asString(payload.contentPreview);
   const shouldKeepPreview =
     name.toLowerCase().endsWith(".json") ||
@@ -171,6 +290,7 @@ function compactGeneratedFileForPrompt(value: unknown) {
     status: file.status,
     payload: {
       ...payload,
+      parsedJson: compactParsedJsonForPrompt(name.toLowerCase(), payload.parsedJson),
       contentPreview: shouldKeepPreview && preview ? compactText(preview, 3000) : undefined,
     },
   };
@@ -263,7 +383,7 @@ function compactToolInputForPrompt(toolName: string, value: unknown) {
   return input;
 }
 
-function compactToolResultForPrompt(value: unknown) {
+function compactToolResultForPrompt(value: unknown, focus?: ToolResultFocus) {
   const record = asRecord(value);
   const toolName = asString(record.toolName);
   if (!toolName) {
@@ -277,7 +397,9 @@ function compactToolResultForPrompt(value: unknown) {
     status: record.status,
     input: compactToolInputForPrompt(toolName, record.input),
     error: record.error,
-    artifacts: asObjectArray(record.artifacts).map(compactGeneratedFileForPrompt),
+    artifacts: asObjectArray(record.artifacts).map((artifact) =>
+      compactGeneratedFileForPrompt(artifact, focus),
+    ),
   };
 
   if (toolName === "python.run") {
@@ -290,7 +412,9 @@ function compactToolResultForPrompt(value: unknown) {
         durationMs: result.durationMs,
         stdout: compactText(result.stdout, 2000),
         stderr: compactText(result.stderr, 2000),
-        files: asObjectArray(result.files).map(compactGeneratedFileForPrompt),
+        files: asObjectArray(result.files).map((file) =>
+          compactGeneratedFileForPrompt(file, focus),
+        ),
       },
     };
   }
@@ -327,14 +451,18 @@ function compactToolResultForPrompt(value: unknown) {
   }
 
   if (toolName === "google.slides.readText") {
+    const slides = asObjectArray(result.slides);
+    const focusedSlides =
+      focus && focus.slideObjectIds.size > 0
+        ? slides.filter((slide) => focus.slideObjectIds.has(asString(slide.slideObjectId)))
+        : slides.slice(0, 16);
     return {
       ...base,
       result: {
         presentationId: result.presentationId,
         title: result.title,
-        slides: asObjectArray(result.slides)
-          .slice(0, 16)
-          .map((slide) => ({
+        slideCount: slides.length,
+        slides: focusedSlides.map((slide) => ({
             slideIndex: slide.slideIndex,
             slideObjectId: slide.slideObjectId,
             textElements: asObjectArray(slide.textElements)
@@ -349,14 +477,18 @@ function compactToolResultForPrompt(value: unknown) {
   }
 
   if (toolName === "google.slides.inspectTemplate") {
+    const slides = asObjectArray(result.slides);
+    const focusedSlides =
+      focus && focus.slideObjectIds.size > 0
+        ? slides.filter((slide) => focus.slideObjectIds.has(asString(slide.slideObjectId)))
+        : slides.slice(0, 24);
     return {
       ...base,
       result: {
         presentationId: result.presentationId,
         title: result.title,
-        slides: asObjectArray(result.slides)
-          .slice(0, 24)
-          .map((slide) => ({
+        slideCount: slides.length,
+        slides: focusedSlides.map((slide) => ({
             slideIndex: slide.slideIndex,
             slideObjectId: slide.slideObjectId,
             classification: slide.classification,
@@ -450,7 +582,8 @@ function compactToolResultForPrompt(value: unknown) {
 }
 
 function compactToolResultsForPrompt(results: unknown[]) {
-  return results.map(compactToolResultForPrompt);
+  const focus = latestToolResultFocus(results);
+  return results.map((result) => compactToolResultForPrompt(result, focus));
 }
 
 function compactBasePromptForPlanner(basePrompt: string) {
@@ -1080,6 +1213,40 @@ function slideLooksLikePlaceholder(text: string) {
   );
 }
 
+function isSegmentTrendSlide(text: string, title: string) {
+  return /\b(monthly|month|trend|by month|mom|time series)\b/i.test(`${title}\n${text}`);
+}
+
+function segmentHasTrendData(metrics: Record<string, unknown>) {
+  return [
+    metrics.monthly,
+    metrics.monthly_trends,
+    metrics.monthly_trend,
+    metrics.trends,
+    metrics.trend,
+    metrics.time_series,
+    metrics.timeseries,
+  ].some((value) => {
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+    return Object.keys(asRecord(value)).length > 0;
+  });
+}
+
+function shouldPlaceholderSegmentTrendSlide(
+  reportData: Record<string, unknown>,
+  slideText: string,
+  slideTitle: string,
+) {
+  const segment = slideSegmentForReportData(reportData, slideText, slideTitle);
+  return Boolean(
+    segment &&
+      isSegmentTrendSlide(slideText, slideTitle) &&
+      !segmentHasTrendData(segment.metrics),
+  );
+}
+
 function slideSegmentForReportData(
   reportData: Record<string, unknown>,
   slideText: string,
@@ -1180,6 +1347,12 @@ function segmentMetricIssues(input: {
   const segment = slideSegmentForReportData(input.reportData, input.slideText, input.slideTitle);
   if (!segment) {
     return [];
+  }
+
+  if (isSegmentTrendSlide(input.slideText, input.slideTitle) && !segmentHasTrendData(segment.metrics)) {
+    return [
+      `${segment.category} segment "${segment.label}" trend/monthly slide has no segment-level trend data and must be a placeholder.`,
+    ];
   }
 
   const overallGroups = reportMetricGroupsForRecord(
@@ -1492,6 +1665,7 @@ function genericReportDeckBatchRequests(results: unknown[]) {
 
     if (
       shouldPlaceholderReportSlide(reportData, slideText) ||
+      shouldPlaceholderSegmentTrendSlide(reportData, slideText, slideTitle) ||
       malformedPlaceholderText(slideText) ||
       (containsStaleTerm && !containsExpectedValue && !/summary|overview|performance report|qbr/i.test(slideText))
     ) {
@@ -3301,7 +3475,18 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
   });
 
   let final: GenerateTextResult;
-  if (
+  if (unresolvedWorkflowOutcomes.length > 0 && toolResults.length > 0) {
+    final = buildFallbackFinalResult({
+      provider: input.provider,
+      model: input.model,
+      toolResults,
+      protectedActionRequests: state.protectedActionRequests,
+      llmResults,
+      error: new Error(
+        `Run completed with unresolved workflow blockers: ${unresolvedWorkflowOutcomes.join("; ")}`,
+      ),
+    });
+  } else if (
     unresolvedWorkflowOutcomes.length === 0 &&
     toolResults.length >= 6 &&
     (hasMeaningfulSlidesWrite(toolResults) ||
