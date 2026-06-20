@@ -1821,6 +1821,7 @@ function renderedElementBox(element: Record<string, unknown>) {
 const SLIDE_WIDTH_EMU = 9_144_000;
 const SLIDE_HEIGHT_EMU = 5_143_500;
 const EMU_PER_INCH = 914_400;
+const HEADER_BAND_MAX_Y_EMU = 760_000;
 
 type TextLayoutIssue = {
   objectId: string;
@@ -1843,12 +1844,12 @@ function isHeaderOrFooterTextBox(element: Record<string, unknown>) {
     return false;
   }
 
-  return box.translateY < 1_050_000 || box.translateY > SLIDE_HEIGHT_EMU - 760_000;
+  return box.translateY < HEADER_BAND_MAX_Y_EMU || box.translateY > SLIDE_HEIGHT_EMU - 760_000;
 }
 
 function isHeaderTextBox(element: Record<string, unknown>) {
   const box = textElementBox(element);
-  return Boolean(box && box.translateY < 1_050_000);
+  return Boolean(box && box.translateY < HEADER_BAND_MAX_Y_EMU);
 }
 
 function estimatedRenderedLineCount(text: string, boxWidthEmu: number) {
@@ -1884,7 +1885,7 @@ function textLayoutIssueForElement(
     return null;
   }
 
-  const isHeaderBand = box.translateY < 1_050_000;
+  const isHeaderBand = box.translateY < HEADER_BAND_MAX_Y_EMU;
   const isTinyTextBox = box.height < 520_000 || box.width < 900_000;
   const estimatedLines = estimatedRenderedLineCount(text, box.width);
   const maxLines = maxReadableLinesForBox(box.height);
