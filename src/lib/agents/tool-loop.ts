@@ -1680,6 +1680,7 @@ function pushGenericPositionedTextRequest(
     text: string;
     fontSizePt?: number;
     bold?: boolean;
+    color?: { red: number; green: number; blue: number };
   },
 ) {
   const text = input.text.trim();
@@ -1703,7 +1704,7 @@ function pushGenericPositionedTextRequest(
       },
     },
   );
-  if (input.fontSizePt || typeof input.bold === "boolean") {
+  if (input.fontSizePt || typeof input.bold === "boolean" || input.color) {
     requests.push({
       updateTextStyle: {
         objectId: input.objectId,
@@ -1712,11 +1713,21 @@ function pushGenericPositionedTextRequest(
             ? { fontSize: { magnitude: input.fontSizePt, unit: "PT" } }
             : {}),
           ...(typeof input.bold === "boolean" ? { bold: input.bold } : {}),
+          ...(input.color
+            ? {
+                foregroundColor: {
+                  opaqueColor: {
+                    rgbColor: input.color,
+                  },
+                },
+              }
+            : {}),
         },
         textRange: { type: "ALL" },
         fields: [
           input.fontSizePt ? "fontSize" : "",
           typeof input.bold === "boolean" ? "bold" : "",
+          input.color ? "foregroundColor" : "",
         ]
           .filter(Boolean)
           .join(","),
@@ -2073,6 +2084,31 @@ function formatGeneratedChartMetricLabel(
   return `${formatChartMetricValue(value, metricKey, currency)} ${chartMetricLabel(metricKey)}`;
 }
 
+function metricChartPalette(metricKey: string) {
+  if (metricKey === "cost") {
+    return {
+      fill: { red: 0.1, green: 0.52, blue: 0.34 },
+      track: { red: 0.88, green: 0.95, blue: 0.91 },
+    };
+  }
+  if (metricKey === "cpl" || metricKey === "cpc") {
+    return {
+      fill: { red: 0.85, green: 0.52, blue: 0.12 },
+      track: { red: 0.98, green: 0.93, blue: 0.84 },
+    };
+  }
+  if (metricKey === "ctr" || metricKey === "cvr") {
+    return {
+      fill: { red: 0.32, green: 0.36, blue: 0.82 },
+      track: { red: 0.9, green: 0.91, blue: 0.98 },
+    };
+  }
+  return {
+    fill: { red: 0.15, green: 0.49, blue: 0.72 },
+    track: { red: 0.86, green: 0.93, blue: 0.98 },
+  };
+}
+
 function chartMetricForVisual(input: {
   visualIndex: number;
   slideText: string;
@@ -2141,61 +2177,112 @@ function pushGenericTrendChartRequests(
   const top = box.translateY;
   const width = box.width;
   const height = box.height;
-  const titleHeight = Math.max(260_000, Math.min(360_000, height * 0.22));
-  const labelWidth = Math.max(560_000, Math.min(700_000, width * 0.22));
-  const valueWidth = Math.max(700_000, Math.min(980_000, width * 0.26));
-  const gutter = Math.max(70_000, Math.min(120_000, width * 0.035));
-  const chartWidth = Math.max(520_000, width - labelWidth - valueWidth - gutter * 2);
-  const rowHeight = Math.max(165_000, (height - titleHeight - 70_000) / rows.length);
+  const paddingX = Math.max(90_000, Math.min(180_000, width * 0.055));
+  const paddingY = Math.max(70_000, Math.min(140_000, height * 0.055));
+  const titleHeight = Math.max(240_000, Math.min(330_000, height * 0.18));
+  const labelWidth = Math.max(470_000, Math.min(650_000, width * 0.19));
+  const valueWidth = Math.max(560_000, Math.min(850_000, width * 0.22));
+  const gutter = Math.max(65_000, Math.min(110_000, width * 0.026));
+  const chartLeft = left + paddingX;
+  const chartTop = top + paddingY;
+  const innerWidth = Math.max(1, width - paddingX * 2);
+  const chartWidth = Math.max(520_000, innerWidth - labelWidth - valueWidth - gutter * 2);
+  const availableRowHeight = Math.max(
+    260_000,
+    height - titleHeight - paddingY * 2 - 90_000,
+  );
+  const rowHeight = Math.max(150_000, availableRowHeight / rows.length);
+  const palette = metricChartPalette(metricKey);
+  const darkText = { red: 0.11, green: 0.12, blue: 0.13 };
+  const mutedText = { red: 0.38, green: 0.4, blue: 0.44 };
+  const ruleColor = { red: 0.85, green: 0.86, blue: 0.88 };
   const baseId = stableSlidesObjectId("summon_chart", input.sourceObjectId);
 
-  pushGenericPositionedTextRequest(requests, seen, {
-    objectId: `${baseId}_title`.slice(0, 48),
+  pushGenericRectangleRequest(requests, seen, {
+    objectId: `${baseId}_bg`.slice(0, 48),
     slideObjectId: input.slideObjectId,
     x: left,
     y: top,
     width,
+    height,
+    color: { red: 0.98, green: 0.985, blue: 0.98 },
+  });
+
+  pushGenericPositionedTextRequest(requests, seen, {
+    objectId: `${baseId}_title`.slice(0, 48),
+    slideObjectId: input.slideObjectId,
+    x: chartLeft,
+    y: chartTop,
+    width: innerWidth,
     height: titleHeight,
-    text: `Monthly ${chartMetricLabel(metricKey)}\nGenerated from uploaded data`,
-    fontSizePt: 10,
+    text: `${chartMetricLabel(metricKey)} by month\nGenerated from uploaded data`,
+    fontSizePt: 9,
     bold: true,
+    color: darkText,
+  });
+
+  [0.25, 0.5, 0.75, 1].forEach((ratio, gridIndex) => {
+    const x = chartLeft + labelWidth + chartWidth * ratio;
+    pushGenericRectangleRequest(requests, seen, {
+      objectId: `${baseId}_grid_${gridIndex}`.slice(0, 48),
+      slideObjectId: input.slideObjectId,
+      x,
+      y: chartTop + titleHeight + 20_000,
+      width: 6_000,
+      height: availableRowHeight + 30_000,
+      color: ruleColor,
+    });
   });
 
   rows.forEach((row, index) => {
-    const y = top + titleHeight + index * rowHeight;
-    const barWidth = Math.max(40_000, (row.value / max) * chartWidth);
+    const y = chartTop + titleHeight + 35_000 + index * rowHeight;
+    const trackHeight = Math.max(45_000, Math.min(76_000, rowHeight * 0.32));
+    const barWidth = Math.max(36_000, (row.value / max) * chartWidth);
     const labelId = `${baseId}_l_${index}`.slice(0, 48);
+    const trackId = `${baseId}_t_${index}`.slice(0, 48);
     const barId = `${baseId}_b_${index}`.slice(0, 48);
     const valueId = `${baseId}_v_${index}`.slice(0, 48);
     pushGenericPositionedTextRequest(requests, seen, {
       objectId: labelId,
       slideObjectId: input.slideObjectId,
-      x: left,
+      x: chartLeft,
       y,
       width: labelWidth,
       height: rowHeight * 0.72,
       text: row.period,
-      fontSizePt: 10,
+      fontSizePt: 8,
+      bold: true,
+      color: mutedText,
+    });
+    pushGenericRectangleRequest(requests, seen, {
+      objectId: trackId,
+      slideObjectId: input.slideObjectId,
+      x: chartLeft + labelWidth,
+      y: y + rowHeight * 0.22,
+      width: chartWidth,
+      height: trackHeight,
+      color: palette.track,
     });
     pushGenericRectangleRequest(requests, seen, {
       objectId: barId,
       slideObjectId: input.slideObjectId,
-      x: left + labelWidth,
-      y: y + rowHeight * 0.16,
+      x: chartLeft + labelWidth,
+      y: y + rowHeight * 0.22,
       width: barWidth,
-      height: rowHeight * 0.48,
-      color: { red: 0.22, green: 0.76, blue: 0.52 },
+      height: trackHeight,
+      color: palette.fill,
     });
     pushGenericPositionedTextRequest(requests, seen, {
       objectId: valueId,
       slideObjectId: input.slideObjectId,
-      x: left + labelWidth + chartWidth + gutter,
+      x: chartLeft + labelWidth + chartWidth + gutter,
       y,
       width: valueWidth,
       height: rowHeight * 0.72,
       text: formatGeneratedChartMetricLabel(row.value, metricKey, currency),
-      fontSizePt: 10,
+      fontSizePt: 8,
       bold: true,
+      color: darkText,
     });
   });
 }
