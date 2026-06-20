@@ -29,6 +29,7 @@ import {
   type ApprovedActionJob,
   type ManualAgentRunJob,
 } from "@/lib/queue/agent-runs";
+import { normalizeAgentToolSelection } from "@/lib/tools/definitions";
 
 type CreateManualAgentRunInput = {
   agentId: string;
@@ -49,7 +50,9 @@ function normalizeTools(tools: Prisma.JsonValue) {
     return [];
   }
 
-  return tools.filter((tool): tool is string => typeof tool === "string");
+  return normalizeAgentToolSelection(
+    tools.filter((tool): tool is string => typeof tool === "string"),
+  );
 }
 
 function asJsonObject(value: unknown): Prisma.InputJsonObject {

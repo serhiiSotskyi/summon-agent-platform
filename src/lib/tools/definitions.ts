@@ -149,3 +149,68 @@ export function isGenericAgentToolKey(value: string): value is GenericAgentToolK
 export function genericToolDefinition(key: string) {
   return GENERIC_AGENT_TOOLS.find((tool) => tool.key === key);
 }
+
+function addIfMissing(tools: string[], tool: string) {
+  if (!tools.includes(tool)) {
+    tools.push(tool);
+  }
+}
+
+function hasAnyToolPrefix(tools: string[], prefix: string) {
+  return tools.some((tool) => tool.startsWith(prefix));
+}
+
+function hasAnyTool(tools: string[], candidates: string[]) {
+  return candidates.some((tool) => tools.includes(tool));
+}
+
+export function normalizeAgentToolSelection(selectedTools: string[]) {
+  const tools = selectedTools.filter((tool, index, all) => {
+    return typeof tool === "string" && tool.trim() && all.indexOf(tool) === index;
+  });
+
+  const usesGoogleDrive =
+    tools.includes("google-drive") ||
+    hasAnyToolPrefix(tools, "google.drive.") ||
+    hasAnyToolPrefix(tools, "google.docs.") ||
+    hasAnyToolPrefix(tools, "google.sheets.") ||
+    hasAnyToolPrefix(tools, "google.slides.");
+
+  if (usesGoogleDrive) {
+    addIfMissing(tools, "google-drive");
+  }
+
+  if (tools.includes("notion.createPage")) {
+    addIfMissing(tools, "notion");
+  }
+
+  const usesSlides = hasAnyToolPrefix(tools, "google.slides.");
+  if (usesSlides) {
+    addIfMissing(tools, "google.slides.readText");
+    addIfMissing(tools, "google.slides.inspectTemplate");
+  }
+
+  const writesSlides = hasAnyTool(tools, [
+    "google.slides.copyTemplate",
+    "google.slides.replaceText",
+    "google.slides.updateText",
+    "google.slides.updateTableCell",
+    "google.slides.batchUpdate",
+  ]);
+
+  if (writesSlides) {
+    addIfMissing(tools, "google.slides.auditDeck");
+  }
+
+  if (tools.includes("python.run") && usesSlides) {
+    addIfMissing(tools, "google.drive.uploadArtifact");
+    addIfMissing(tools, "google.slides.batchUpdate");
+  }
+
+  const usesDocs = hasAnyToolPrefix(tools, "google.docs.");
+  if (usesDocs) {
+    addIfMissing(tools, "google.docs.readText");
+  }
+
+  return tools;
+}

@@ -37,6 +37,7 @@ import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
 import { llmProviderSchema } from "@/lib/env";
 import { enqueueApprovedAction } from "@/lib/queue/agent-runs";
+import { normalizeAgentToolSelection } from "@/lib/tools/definitions";
 
 function requireContext(workspaceId?: string) {
   return getCurrentUserContext(workspaceId).then((context) => {
@@ -59,14 +60,16 @@ function asJsonObject(value: unknown): Prisma.InputJsonObject {
     : {};
 }
 
-function selectedConnectorTools(formData: FormData) {
+function selectedAgentTools(formData: FormData) {
   const selectedConnectors = formData
     .getAll("tools")
     .filter((value): value is string => typeof value === "string");
 
-  return selectedConnectors.length > 0
-    ? selectedConnectors
-    : connectorCatalog.slice(0, 2).map((connector) => connector.key);
+  return normalizeAgentToolSelection(
+    selectedConnectors.length > 0
+      ? selectedConnectors
+      : connectorCatalog.slice(0, 2).map((connector) => connector.key),
+  );
 }
 
 function triggerConfigFromFormData(formData: FormData, agentId?: string) {
@@ -305,7 +308,7 @@ export async function createAgentDraft(formData: FormData) {
     "deliveryPermissionMode",
     "ASK_BEFORE_SENDING",
   ) as DeliveryPermissionMode;
-  const connectorTools = selectedConnectorTools(formData);
+  const connectorTools = selectedAgentTools(formData);
   const trigger = triggerConfigFromFormData(formData);
   const activateScheduledAgent =
     requestedStatus === "ACTIVE" && trigger.triggerType === "SCHEDULED";
@@ -497,7 +500,7 @@ export async function updateAgentConfig(formData: FormData) {
     systemPrompt: prompt
       ? agentPromptFromForm(prompt)
       : getText(formData, "systemPrompt", existingAgent.systemPrompt),
-    tools: selectedConnectorTools(formData),
+    tools: selectedAgentTools(formData),
     triggerType: trigger.triggerType,
     triggerConfig: trigger.triggerConfig ?? Prisma.DbNull,
     llmProvider,
