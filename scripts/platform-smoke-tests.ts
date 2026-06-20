@@ -9,6 +9,7 @@ import {
 import { SUMMON_MEMORY_SYSTEM_INSTRUCTION } from "../src/lib/agents/defaults";
 import { getUploadedFilesFromFormData } from "../src/lib/agents/files";
 import { estimateLlmCost, getPricingMetadata } from "../src/lib/llm/pricing";
+import { GENERIC_AGENT_TOOLS } from "../src/lib/tools/definitions";
 
 function testSchedules() {
   const daily = buildScheduleConfig({
@@ -124,9 +125,27 @@ function testRoleGroupedUploads() {
   );
 }
 
+function testToolPolicyMetadata() {
+  assert.ok(GENERIC_AGENT_TOOLS.length > 0);
+
+  for (const tool of GENERIC_AGENT_TOOLS) {
+    assert.ok(tool.authRequirement, `${tool.key} is missing authRequirement`);
+    assert.ok(tool.approvalPolicy, `${tool.key} is missing approvalPolicy`);
+    assert.ok(tool.retryPolicy, `${tool.key} is missing retryPolicy`);
+    assert.ok(tool.timeoutMs > 0, `${tool.key} is missing timeoutMs`);
+  }
+
+  const slideWriter = GENERIC_AGENT_TOOLS.find(
+    (tool) => tool.key === "google.slides.batchUpdate",
+  );
+  assert.equal(slideWriter?.riskLevel, "run_owned_write");
+  assert.match(slideWriter?.approvalPolicy ?? "", /run-owned/i);
+}
+
 testSchedules();
 testPricing();
 testMemoryInstruction();
 testRoleGroupedUploads();
+testToolPolicyMetadata();
 
 console.log("platform smoke tests passed");

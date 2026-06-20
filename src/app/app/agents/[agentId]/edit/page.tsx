@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
+import { GenericToolOption } from "@/components/app/generic-tool-option";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -261,26 +262,11 @@ export default async function EditAgentPage({
                 Agent tools
               </p>
               {GENERIC_AGENT_TOOLS.map((tool) => (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm"
+                <GenericToolOption
+                  defaultChecked={selectedTools.has(tool.key)}
                   key={tool.key}
-                >
-                  <input
-                    className="mt-1 accent-emerald-300"
-                    defaultChecked={selectedTools.has(tool.key)}
-                    name="tools"
-                    type="checkbox"
-                    value={tool.key}
-                  />
-                  <span>
-                    <span className="block font-medium text-white">
-                      {tool.name}
-                    </span>
-                    <span className="mt-1 block leading-5 text-emerald-100/80">
-                      {tool.summary}
-                    </span>
-                  </span>
-                </label>
+                  tool={tool}
+                />
               ))}
               <Alert>
                 Reads, sandbox code, creating new files, copying templates, and

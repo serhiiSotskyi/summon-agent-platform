@@ -3945,6 +3945,15 @@ function toolDocs(toolKeys: GenericAgentToolKey[]) {
         name: definition?.name ?? key,
         category: definition?.category ?? "Tool",
         summary: definition?.summary ?? "",
+        authRequirement: definition?.authRequirement ?? "Configured workspace access",
+        riskLevel: definition?.riskLevel ?? "review",
+        approvalPolicy:
+          definition?.approvalPolicy ??
+          "Ask for approval before making protected or destructive changes.",
+        timeoutMs: definition?.timeoutMs ?? 45_000,
+        retryPolicy:
+          definition?.retryPolicy ??
+          "No in-run retry. The worker job can retry failed runs.",
         inputSchema: schemaForTool(key),
       };
     })

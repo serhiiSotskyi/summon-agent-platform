@@ -2,6 +2,7 @@ import { Bot, FileUp, Link2, Rocket, ShieldCheck } from "lucide-react";
 import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { AgentStarterBriefs } from "@/components/app/agent-starter-briefs";
+import { GenericToolOption } from "@/components/app/generic-tool-option";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -201,25 +202,7 @@ export default async function NewAgentPage({
                 Agent tools
               </p>
               {GENERIC_AGENT_TOOLS.map((tool) => (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-md border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm"
-                  key={tool.key}
-                >
-                  <input
-                    className="mt-1 accent-emerald-300"
-                    name="tools"
-                    type="checkbox"
-                    value={tool.key}
-                  />
-                  <span>
-                    <span className="block font-medium text-white">
-                      {tool.name}
-                    </span>
-                    <span className="mt-1 block leading-5 text-emerald-100/80">
-                      {tool.summary}
-                    </span>
-                  </span>
-                </label>
+                <GenericToolOption key={tool.key} tool={tool} />
               ))}
               <Alert>
                 <FileUp aria-hidden className="mb-2 size-4" />

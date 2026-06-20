@@ -1,4 +1,4 @@
-export const GENERIC_AGENT_TOOLS = [
+const GENERIC_AGENT_TOOL_BASE = [
   {
     key: "python.run",
     name: "Python sandbox",
@@ -140,7 +140,94 @@ export const GENERIC_AGENT_TOOLS = [
   },
 ] as const;
 
-export type GenericAgentToolKey = (typeof GENERIC_AGENT_TOOLS)[number]["key"];
+export type GenericAgentToolKey = (typeof GENERIC_AGENT_TOOL_BASE)[number]["key"];
+
+export type ToolRiskLevel =
+  | "read"
+  | "sandbox"
+  | "run_owned_write"
+  | "review";
+
+type ToolPolicy = {
+  approvalPolicy: string;
+  authRequirement: string;
+  retryPolicy: string;
+  riskLevel: ToolRiskLevel;
+  timeoutMs: number;
+};
+
+const sandboxPolicy = {
+  approvalPolicy:
+    "No approval required. Code runs only inside the scoped sandbox workspace.",
+  authRequirement: "Uploaded/generated code only; no external connector auth.",
+  retryPolicy: "No in-run retry. The worker job can retry failed runs.",
+  riskLevel: "sandbox",
+  timeoutMs: 30_000,
+} satisfies ToolPolicy;
+
+const googleReadPolicy = {
+  approvalPolicy: "No approval required for reads.",
+  authRequirement: "Active Google Drive workspace credential.",
+  retryPolicy: "No in-run retry. The worker job can retry failed runs.",
+  riskLevel: "read",
+  timeoutMs: 45_000,
+} satisfies ToolPolicy;
+
+const googleRunOwnedWritePolicy = {
+  approvalPolicy:
+    "No approval required for creating/copying files or editing run-owned files created/copied by this run. Existing external files remain protected.",
+  authRequirement: "Active Google Drive workspace credential with write scopes.",
+  retryPolicy: "No in-run retry. The worker job can retry failed runs.",
+  riskLevel: "run_owned_write",
+  timeoutMs: 45_000,
+} satisfies ToolPolicy;
+
+const googleReviewPolicy = {
+  approvalPolicy: "No approval required. This audits generated run-owned output.",
+  authRequirement: "Active Google Drive workspace credential.",
+  retryPolicy: "No retry required; rerun after fixing flagged output.",
+  riskLevel: "review",
+  timeoutMs: 45_000,
+} satisfies ToolPolicy;
+
+const notionWritePolicy = {
+  approvalPolicy:
+    "No approval required for creating a new memory page with run output, evidence, links, and caveats.",
+  authRequirement: "Active Notion workspace credential with page creation access.",
+  retryPolicy: "No in-run retry. The worker job can retry failed runs.",
+  riskLevel: "run_owned_write",
+  timeoutMs: 45_000,
+} satisfies ToolPolicy;
+
+const TOOL_POLICIES = {
+  "python.run": sandboxPolicy,
+  "google.drive.copyFile": googleRunOwnedWritePolicy,
+  "google.drive.createTextFile": googleRunOwnedWritePolicy,
+  "google.drive.uploadArtifact": googleRunOwnedWritePolicy,
+  "google.docs.createDocument": googleRunOwnedWritePolicy,
+  "google.docs.readText": googleReadPolicy,
+  "google.docs.replaceText": googleRunOwnedWritePolicy,
+  "google.docs.batchUpdate": googleRunOwnedWritePolicy,
+  "google.sheets.readRange": googleReadPolicy,
+  "google.sheets.createSpreadsheet": googleRunOwnedWritePolicy,
+  "google.sheets.updateRange": googleRunOwnedWritePolicy,
+  "google.slides.copyTemplate": googleRunOwnedWritePolicy,
+  "google.slides.readText": googleReadPolicy,
+  "google.slides.inspectTemplate": googleReadPolicy,
+  "google.slides.updateText": googleRunOwnedWritePolicy,
+  "google.slides.updateTableCell": googleRunOwnedWritePolicy,
+  "google.slides.replaceText": googleRunOwnedWritePolicy,
+  "google.slides.batchUpdate": googleRunOwnedWritePolicy,
+  "google.slides.auditDeck": googleReviewPolicy,
+  "notion.createPage": notionWritePolicy,
+} satisfies Record<GenericAgentToolKey, ToolPolicy>;
+
+export const GENERIC_AGENT_TOOLS = GENERIC_AGENT_TOOL_BASE.map((tool) => ({
+  ...tool,
+  ...TOOL_POLICIES[tool.key],
+}));
+
+export type GenericAgentTool = (typeof GENERIC_AGENT_TOOLS)[number];
 
 export function isGenericAgentToolKey(value: string): value is GenericAgentToolKey {
   return GENERIC_AGENT_TOOLS.some((tool) => tool.key === value);
