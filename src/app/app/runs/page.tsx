@@ -26,14 +26,58 @@ export default async function RunsPage({
 
   const runs = await getDb().agentRun.findMany({
     where: { agent: { workspaceId: context.workspace.id } },
-    include: {
-      agent: { select: { name: true } },
-      triggeredBy: { select: { name: true, email: true } },
-      _count: { select: { artifacts: true, toolCalls: true } },
+    select: {
+      id: true,
+      agentId: true,
+      triggeredById: true,
+      triggerType: true,
+      status: true,
+      triggeredAt: true,
+      costEstimate: true,
     },
     orderBy: { triggeredAt: "desc" },
     take: 50,
   });
+  const runIds = runs.map((run) => run.id);
+  const agentIds = Array.from(new Set(runs.map((run) => run.agentId)));
+  const triggeredByIds = Array.from(
+    new Set(runs.map((run) => run.triggeredById).filter(Boolean)),
+  ) as string[];
+  const [agents, triggeredByUsers, artifactCounts, toolCallCounts] =
+    runIds.length > 0
+      ? await Promise.all([
+          getDb().agent.findMany({
+            where: { id: { in: agentIds }, workspaceId: context.workspace.id },
+            select: { id: true, name: true },
+          }),
+          triggeredByIds.length > 0
+            ? getDb().user.findMany({
+                where: { id: { in: triggeredByIds } },
+                select: { id: true, name: true, email: true },
+              })
+            : Promise.resolve([]),
+          getDb().agentArtifact.groupBy({
+            by: ["agentRunId"],
+            where: { agentRunId: { in: runIds } },
+            _count: { _all: true },
+          }),
+          getDb().toolCall.groupBy({
+            by: ["agentRunId"],
+            where: { agentRunId: { in: runIds } },
+            _count: { _all: true },
+          }),
+        ])
+      : [[], [], [], []];
+  const agentNameById = new Map(agents.map((agent) => [agent.id, agent.name]));
+  const triggeredByById = new Map(
+    triggeredByUsers.map((user) => [user.id, user.name ?? user.email]),
+  );
+  const artifactCountByRunId = new Map(
+    artifactCounts.map((count) => [count.agentRunId, count._count._all]),
+  );
+  const toolCallCountByRunId = new Map(
+    toolCallCounts.map((count) => [count.agentRunId, count._count._all]),
+  );
 
   return (
     <>
@@ -68,7 +112,7 @@ export default async function RunsPage({
                         className="font-medium text-white hover:text-emerald-200"
                         href={`/app/runs/${run.id}?workspace=${context.workspace.id}`}
                       >
-                        {run.agent.name}
+                        {agentNameById.get(run.agentId) ?? "Unknown agent"}
                       </Link>
                     </TD>
                     <TD>
@@ -78,14 +122,18 @@ export default async function RunsPage({
                     <TD>{formatRelativeTime(run.triggeredAt)}</TD>
                     <TD>
                       <RunEvidenceCounts
-                        artifacts={run._count.artifacts}
-                        toolCalls={run._count.toolCalls}
+                        artifacts={artifactCountByRunId.get(run.id) ?? 0}
+                        toolCalls={toolCallCountByRunId.get(run.id) ?? 0}
                       />
                     </TD>
                     <TD>
                       {run.costEstimate ? formatUsd(run.costEstimate.toNumber()) : "Unknown"}
                     </TD>
-                    <TD>{run.triggeredBy?.name ?? run.triggeredBy?.email ?? "System"}</TD>
+                    <TD>
+                      {run.triggeredById
+                        ? (triggeredByById.get(run.triggeredById) ?? "Unknown user")
+                        : "System"}
+                    </TD>
                   </TR>
                 ))}
               </TBody>
