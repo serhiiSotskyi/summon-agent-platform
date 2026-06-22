@@ -2,6 +2,7 @@ import { ArrowLeft, Check, Clock, LoaderCircle, XCircle } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Prisma } from "@prisma/client";
+import { MarkdownOutput } from "@/components/app/markdown-output";
 import { PageHeader } from "@/components/app/page-header";
 import { RunAutoRefresh } from "@/components/app/run-auto-refresh";
 import { StatusBadge } from "@/components/app/status-badge";
@@ -842,9 +843,7 @@ export default async function RunDetailPage({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="whitespace-pre-wrap rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-200">
-              {outputText}
-            </div>
+            <MarkdownOutput content={outputText} />
           </CardContent>
         </Card>
       ) : null}
