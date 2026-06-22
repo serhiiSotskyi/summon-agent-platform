@@ -34,17 +34,40 @@ export default async function AgentsPage({
           workspaceId: context.workspace.id,
           status: { not: "DELETED" },
         },
-        include: {
-          runs: {
-            orderBy: { triggeredAt: "desc" },
-            take: 1,
-          },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          status: true,
+          triggerType: true,
+          llmProvider: true,
+          llmModel: true,
+          updatedAt: true,
           createdBy: {
             select: { name: true, email: true },
           },
         },
         orderBy: { updatedAt: "desc" },
       });
+  const latestRuns = demo
+    ? []
+    : await getDb().agentRun.findMany({
+        where: {
+          agentId: { in: agents.map((agent) => agent.id) },
+        },
+        orderBy: { triggeredAt: "desc" },
+        select: {
+          agentId: true,
+          triggeredAt: true,
+        },
+      });
+  const latestRunByAgent = new Map<string, Date>();
+
+  for (const run of latestRuns) {
+    if (!latestRunByAgent.has(run.agentId)) {
+      latestRunByAgent.set(run.agentId, run.triggeredAt);
+    }
+  }
 
   return (
     <>
@@ -80,33 +103,36 @@ export default async function AgentsPage({
                 </TR>
               </THead>
               <TBody>
-                {agents.map((agent) => (
-                  <TR key={agent.id}>
-                    <TD>
-                      <Link
-                        className="font-medium text-white hover:text-emerald-200"
-                        href={`/app/agents/${agent.id}?workspace=${context.workspace.id}${demo ? "&demo=1" : ""}`}
-                      >
-                        {agent.name}
-                      </Link>
-                      <p className="mt-1 max-w-xl truncate text-xs text-zinc-500">
-                        {agent.description}
-                      </p>
-                    </TD>
-                    <TD>
-                      <StatusBadge status={agent.status} />
-                    </TD>
-                    <TD>{agent.triggerType.toLowerCase()}</TD>
-                    <TD>
-                      {agent.llmProvider} / {agent.llmModel}
-                    </TD>
-                    <TD>
-                      {"runs" in agent
-                        ? formatRelativeTime(agent.runs[0]?.triggeredAt)
-                        : formatRelativeTime(agent.lastRun)}
-                    </TD>
-                  </TR>
-                ))}
+                {agents.map((agent) => {
+                  const lastRunAt =
+                    "lastRun" in agent
+                      ? agent.lastRun
+                      : latestRunByAgent.get(agent.id);
+
+                  return (
+                    <TR key={agent.id}>
+                      <TD>
+                        <Link
+                          className="font-medium text-white hover:text-emerald-200"
+                          href={`/app/agents/${agent.id}?workspace=${context.workspace.id}${demo ? "&demo=1" : ""}`}
+                        >
+                          {agent.name}
+                        </Link>
+                        <p className="mt-1 max-w-xl truncate text-xs text-zinc-500">
+                          {agent.description}
+                        </p>
+                      </TD>
+                      <TD>
+                        <StatusBadge status={agent.status} />
+                      </TD>
+                      <TD>{agent.triggerType.toLowerCase()}</TD>
+                      <TD>
+                        {agent.llmProvider} / {agent.llmModel}
+                      </TD>
+                      <TD>{formatRelativeTime(lastRunAt)}</TD>
+                    </TR>
+                  );
+                })}
               </TBody>
             </Table>
           ) : (
