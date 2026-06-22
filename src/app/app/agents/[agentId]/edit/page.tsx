@@ -5,16 +5,14 @@ import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { LlmModelFields } from "@/components/app/llm-model-fields";
 import { PageHeader } from "@/components/app/page-header";
+import { ScheduleFields } from "@/components/app/schedule-fields";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { canCreateAgent } from "@/lib/app/permissions";
-import {
-  DEFAULT_SCHEDULE_TIMEZONE,
-  readScheduleConfig,
-} from "@/lib/agents/schedules";
+import { readScheduleConfig } from "@/lib/agents/schedules";
 import { getDb } from "@/lib/db";
 import { updateAgentConfig } from "../../../actions";
 
@@ -149,64 +147,13 @@ export default async function EditAgentPage({
                   Used only when Trigger is Scheduled.
                 </p>
               </div>
-              <div className="grid gap-4 md:grid-cols-4">
-                <div className="space-y-2">
-                  <Label htmlFor="scheduleFrequency">Frequency</Label>
-                  <Select
-                    id="scheduleFrequency"
-                    name="scheduleFrequency"
-                    defaultValue={schedule?.frequency ?? "DAILY"}
-                  >
-                    <option value="HOURLY">Hourly</option>
-                    <option value="DAILY">Daily</option>
-                    <option value="WEEKLY">Weekly</option>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="scheduleTimeOfDay">Time</Label>
-                  <Input
-                    id="scheduleTimeOfDay"
-                    name="scheduleTimeOfDay"
-                    type="time"
-                    defaultValue={schedule?.timeOfDay ?? "09:00"}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="scheduleMinute">Hourly minute</Label>
-                  <Input
-                    id="scheduleMinute"
-                    name="scheduleMinute"
-                    type="number"
-                    min="0"
-                    max="59"
-                    defaultValue={schedule?.minute ?? 0}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="scheduleWeekday">Weekday</Label>
-                  <Select
-                    id="scheduleWeekday"
-                    name="scheduleWeekday"
-                    defaultValue={String(schedule?.weekday ?? 1)}
-                  >
-                    <option value="1">Monday</option>
-                    <option value="2">Tuesday</option>
-                    <option value="3">Wednesday</option>
-                    <option value="4">Thursday</option>
-                    <option value="5">Friday</option>
-                    <option value="6">Saturday</option>
-                    <option value="0">Sunday</option>
-                  </Select>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="scheduleTimezone">Timezone</Label>
-                <Input
-                  id="scheduleTimezone"
-                  name="scheduleTimezone"
-                  defaultValue={schedule?.timezone ?? DEFAULT_SCHEDULE_TIMEZONE}
-                />
-              </div>
+              <ScheduleFields
+                defaultFrequency={schedule?.frequency}
+                defaultMinute={schedule?.minute}
+                defaultTimeOfDay={schedule?.timeOfDay}
+                defaultTimezone={schedule?.timezone}
+                defaultWeekday={schedule?.weekday}
+              />
             </div>
           </CardContent>
         </Card>

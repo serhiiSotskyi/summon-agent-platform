@@ -3,6 +3,7 @@ import {
   buildScheduleConfig,
   DEFAULT_SCHEDULE_TIMEZONE,
   formatScheduleSummary,
+  getNextScheduleDate,
   readScheduleConfig,
   withAgentSchedulerId,
 } from "../src/lib/agents/schedules";
@@ -42,6 +43,16 @@ function testSchedules() {
   const restored = readScheduleConfig(withAgentSchedulerId(daily, "agent_456"));
   assert.equal(restored?.jobSchedulerId, "agent:agent_456");
   assert.equal(restored?.pattern, "30 8 * * *");
+
+  const londonSummerNextRun = getNextScheduleDate(
+    buildScheduleConfig({
+      frequency: "DAILY",
+      timeOfDay: "09:00",
+      timezone: "Europe/London",
+    }),
+    new Date("2026-06-22T07:30:00.000Z"),
+  );
+  assert.equal(londonSummerNextRun?.toISOString(), "2026-06-22T08:00:00.000Z");
 }
 
 function testPricing() {
