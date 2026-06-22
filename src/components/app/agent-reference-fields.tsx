@@ -1,3 +1,8 @@
+"use client";
+
+import { Plus, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Input, Label, Select } from "@/components/ui/form";
 
 const REFERENCE_ROLES = [
@@ -10,23 +15,65 @@ const REFERENCE_ROLES = [
 ] as const;
 
 export function AgentReferenceFields({
-  count = 3,
+  count = 1,
   idPrefix,
 }: {
   count?: number;
   idPrefix: string;
 }) {
+  const [rows, setRows] = useState(() =>
+    Array.from({ length: Math.max(1, count) }, (_, index) => ({
+      id: `${idPrefix}-${index + 1}`,
+    })),
+  );
+
+  function addReference() {
+    setRows((currentRows) => [
+      ...currentRows,
+      {
+        id: `${idPrefix}-${Date.now()}-${currentRows.length + 1}`,
+      },
+    ]);
+  }
+
+  function removeReference(rowId: string) {
+    setRows((currentRows) => {
+      if (currentRows.length === 1) {
+        return currentRows;
+      }
+
+      return currentRows.filter((row) => row.id !== rowId);
+    });
+  }
+
   return (
     <div className="space-y-4">
-      {Array.from({ length: count }, (_, index) => {
+      {rows.map((row, index) => {
         const rowNumber = index + 1;
-        const fieldId = `${idPrefix}-${rowNumber}`;
+        const fieldId = `${row.id}-${rowNumber}`;
 
         return (
           <div
             className="space-y-3 rounded-md border border-white/10 bg-black/20 p-3"
-            key={fieldId}
+            key={row.id}
           >
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-zinc-200">
+                Reference {rowNumber}
+              </p>
+              {rows.length > 1 ? (
+                <Button
+                  aria-label={`Remove reference ${rowNumber}`}
+                  onClick={() => removeReference(row.id)}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Trash2 aria-hidden />
+                  Remove
+                </Button>
+              ) : null}
+            </div>
             <div className="grid gap-4 md:grid-cols-[1fr_180px]">
               <div className="space-y-2">
                 <Label htmlFor={`${fieldId}-url`}>
@@ -77,6 +124,10 @@ export function AgentReferenceFields({
           </div>
         );
       })}
+      <Button onClick={addReference} type="button" variant="secondary">
+        <Plus aria-hidden />
+        Add reference
+      </Button>
     </div>
   );
 }
