@@ -2,6 +2,7 @@ import { Bot, Link2, Rocket, ShieldCheck } from "lucide-react";
 import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { AgentStarterBriefs } from "@/components/app/agent-starter-briefs";
+import { LlmModelFields } from "@/components/app/llm-model-fields";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { DEFAULT_SCHEDULE_TIMEZONE } from "@/lib/agents/schedules";
+import { getDefaultLlmSettings } from "@/lib/env";
 import { createAgentDraft } from "../../actions";
 
 type SearchParams = Promise<{ workspace?: string; demo?: string }>;
@@ -24,6 +26,8 @@ export default async function NewAgentPage({
   if (!context.isAuthenticated) {
     return null;
   }
+
+  const llmDefaults = getDefaultLlmSettings();
 
   return (
     <>
@@ -65,18 +69,11 @@ export default async function NewAgentPage({
               </div>
             </div>
             <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor="llmProvider">Provider</Label>
-                <Select id="llmProvider" name="llmProvider" defaultValue="openai">
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="google">Google</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="llmModel">Model</Label>
-                <Input id="llmModel" name="llmModel" defaultValue="gpt-4.1" />
-              </div>
+              <LlmModelFields
+                defaultModel={llmDefaults.model}
+                defaultProvider={llmDefaults.provider}
+                workspaceId={context.workspace.id}
+              />
               <div className="space-y-2">
                 <Label htmlFor="triggerType">Trigger</Label>
                 <Select id="triggerType" name="triggerType" defaultValue="MANUAL">

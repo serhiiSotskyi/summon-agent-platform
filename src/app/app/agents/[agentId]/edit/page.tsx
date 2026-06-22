@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
+import { LlmModelFields } from "@/components/app/llm-model-fields";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -107,18 +108,11 @@ export default async function EditAgentPage({
             </div>
 
             <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor="llmProvider">Provider</Label>
-                <Select id="llmProvider" name="llmProvider" defaultValue={agent.llmProvider}>
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="google">Google</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="llmModel">Model</Label>
-                <Input id="llmModel" name="llmModel" defaultValue={agent.llmModel} />
-              </div>
+              <LlmModelFields
+                defaultModel={agent.llmModel}
+                defaultProvider={agent.llmProvider}
+                workspaceId={context.workspace.id}
+              />
               <div className="space-y-2">
                 <Label htmlFor="triggerType">Trigger</Label>
                 <Select id="triggerType" name="triggerType" defaultValue={agent.triggerType}>
