@@ -38,7 +38,7 @@ export default async function ConnectorsPage({
   return (
     <>
       <PageHeader
-        description="Connect tools once at the workspace level, then let agents use them according to their permissions."
+        description="Connect workspace systems once, then agents can use them automatically when the task needs them."
         eyebrow={demo ? "Connectors - demo" : "Connectors"}
         title="Tool connections"
       />

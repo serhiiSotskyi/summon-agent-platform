@@ -34,7 +34,6 @@ import {
   normalizeInviteEmail,
 } from "@/lib/app/invitations";
 import { createWorkspaceWithOwnerMembership } from "@/lib/app/workspaces";
-import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
 import { llmProviderSchema } from "@/lib/env";
 import { enqueueApprovedAction } from "@/lib/queue/agent-runs";
@@ -66,11 +65,7 @@ function selectedAgentTools(formData: FormData) {
     .getAll("tools")
     .filter((value): value is string => typeof value === "string");
 
-  return normalizeAgentToolSelection(
-    selectedConnectors.length > 0
-      ? selectedConnectors
-      : connectorCatalog.slice(0, 2).map((connector) => connector.key),
-  );
+  return normalizeAgentToolSelection(selectedConnectors);
 }
 
 function triggerConfigFromFormData(formData: FormData, agentId?: string) {

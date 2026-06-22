@@ -5781,11 +5781,11 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
 
 export function genericToolInstruction() {
   return [
-    "Generic agent tools are available only when selected on the agent.",
+    "Generic agent tools are enabled by platform default for every agent.",
     `Supported generic tools: ${GENERIC_AGENT_TOOLS.map((tool) => tool.key).join(", ")}.`,
     "Use tools for real work instead of pretending they ran.",
     "When a task asks for generated artifacts such as decks, reports, files, or memory pages, do not stop after reading context; create or update the requested run-owned outputs.",
-    "For spreadsheet/table outputs, create a native run-owned Google Sheet when the tool is selected, then read back or update important ranges as needed.",
+    "For spreadsheet/table outputs, create a native run-owned Google Sheet when useful, then read back or update important ranges as needed.",
     "Create/copy/write only run-owned outputs unless approval is explicitly granted.",
   ].join("\n");
 }

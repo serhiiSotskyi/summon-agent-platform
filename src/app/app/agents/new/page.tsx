@@ -1,17 +1,14 @@
-import { Bot, FileUp, Link2, Rocket, ShieldCheck } from "lucide-react";
+import { Bot, Link2, Rocket, ShieldCheck } from "lucide-react";
 import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { AgentStarterBriefs } from "@/components/app/agent-starter-briefs";
-import { GenericToolOption } from "@/components/app/generic-tool-option";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
-import { connectorCatalog } from "@/lib/connectors/catalog";
 import { DEFAULT_SCHEDULE_TIMEZONE } from "@/lib/agents/schedules";
-import { GENERIC_AGENT_TOOLS } from "@/lib/tools/definitions";
 import { createAgentDraft } from "../../actions";
 
 type SearchParams = Promise<{ workspace?: string; demo?: string }>;
@@ -31,7 +28,7 @@ export default async function NewAgentPage({
   return (
     <>
       <PageHeader
-        description="Create a draft from plain English, then review generated tools, prompt, permissions, and trigger before activation."
+        description="Create a draft from plain English. Safe workspace tools are enabled automatically; destructive actions still require approval."
         eyebrow="Agent creator"
         title="New agent"
       />
@@ -171,50 +168,6 @@ export default async function NewAgentPage({
         <div className="space-y-5">
           <Card>
             <CardHeader>
-              <CardTitle>Tools</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
-                Connectors
-              </p>
-              {connectorCatalog.map((connector) => (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-black/20 p-3 text-sm"
-                  key={connector.key}
-                >
-                  <input
-                    className="mt-1 accent-emerald-300"
-                    name="tools"
-                    type="checkbox"
-                    value={connector.key}
-                  />
-                  <span>
-                    <span className="block font-medium text-white">
-                      {connector.name}
-                    </span>
-                    <span className="mt-1 block leading-5 text-zinc-500">
-                      {connector.summary}
-                    </span>
-                  </span>
-                </label>
-              ))}
-              <p className="pt-2 text-xs uppercase tracking-[0.14em] text-zinc-500">
-                Agent tools
-              </p>
-              {GENERIC_AGENT_TOOLS.map((tool) => (
-                <GenericToolOption key={tool.key} tool={tool} />
-              ))}
-              <Alert>
-                <FileUp aria-hidden className="mb-2 size-4" />
-                Pick the tools this agent may use. Reads, sandbox code, creating
-                new files, copying templates, and editing run-owned outputs are
-                allowed; destructive changes still require approval.
-              </Alert>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
               <CardTitle>Permissions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -242,8 +195,10 @@ export default async function NewAgentPage({
               </div>
               <Alert>
                 <ShieldCheck aria-hidden className="mb-2 size-4" />
-                Protected actions always require approval, even when full access
-                is selected.
+                Agents can automatically search connected memory, run sandbox
+                code, create files, copy templates, and edit files created by
+                their own run. Protected actions always require approval, even
+                when full access is selected.
               </Alert>
               <div className="grid gap-3">
                 <Button className="w-full" name="intent" type="submit" value="activate">

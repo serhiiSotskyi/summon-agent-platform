@@ -144,7 +144,7 @@ export default async function AgentsPage({
                   </Link>
                 </Button>
               }
-              description="Agents start as drafts so the team can review tools, model choice, permissions, and schedule before activation."
+              description="Agents start as drafts so the team can review the prompt, model choice, permissions, and schedule before activation."
               icon={Bot}
               title="No agents yet"
             />

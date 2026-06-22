@@ -1,4 +1,4 @@
-import { ClipboardList, FileCode2, SearchCheck } from "lucide-react";
+import { ClipboardList, SearchCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 export const AGENT_STARTER_BRIEFS = [
@@ -6,8 +6,6 @@ export const AGENT_STARTER_BRIEFS = [
     title: "Client report or QBR deck",
     bestFor:
       "Turning uploaded CSVs, helper Python, and a Google Slides template into a client-ready draft.",
-    tools:
-      "Notion, Google Drive, Python sandbox, Copy Drive file, Google Slides writer, Notion page",
     prompt: `Create an editable client report deck from the attached inputs.
 
 Use Notion and Google Drive as Summon memory first. Search for the client, reporting templates, PPC, budget, Google Ads, and Summon Memory. Cite source titles and links.
@@ -22,7 +20,6 @@ If data is missing, leave a clear human-editable placeholder instead of inventin
     title: "Budget pacing review",
     bestFor:
       "Reviewing spend trackers and reporting notes without direct Google Ads API access.",
-    tools: "Notion, Google Drive, Google Sheets reader, Python sandbox, Notion page",
     prompt: `Review budget pacing and performance for the requested client or account.
 
 Search Notion and Google Drive first for budget trackers, PPC reports, Google Ads exports, reporting docs, and Summon Memory. Prefer Sheets and files that are clearly current. Cite every source used.
@@ -35,7 +32,6 @@ Do not change budgets, campaign settings, or source trackers. Create a concise r
     title: "Data cleanup or Sheet transform",
     bestFor:
       "Reading messy uploaded data or a Google Sheet, transforming it, and writing a clean run-owned output.",
-    tools: "Google Drive, Google Sheets reader/writer, Python sandbox, Notion page",
     prompt: `Clean and transform the provided data into a useful run-owned output.
 
 Search Notion and Drive for context about the data source and expected format. Read the uploaded file or linked Sheet. Use Python to profile columns, detect missing values, normalize names, calculate any requested fields, and produce a validation summary.
@@ -48,7 +44,6 @@ Return the output Sheet link, transformation notes, validation checks, rows chan
     title: "Client research pack",
     bestFor:
       "Collecting evidence from Notion and Drive into a reusable brief or planning doc.",
-    tools: "Notion, Google Drive, Google Docs or Drive text file, Notion page",
     prompt: `Create a client research pack from Summon memory.
 
 Search Notion and Google Drive for the client name, strategy docs, reports, meeting notes, budget trackers, PPC/SEO/social notes, and Summon Memory. Use only cited evidence and clearly mark anything not found.
@@ -97,16 +92,6 @@ export function AgentStarterBriefs() {
               <Badge className="shrink-0">Open</Badge>
             </summary>
             <div className="mt-4 space-y-3">
-              <div className="flex items-start gap-2 rounded-md border border-white/10 bg-black/30 p-3">
-                <FileCode2
-                  aria-hidden
-                  className="mt-0.5 size-4 shrink-0 text-emerald-200"
-                />
-                <p className="text-xs leading-5 text-zinc-400">
-                  <span className="font-medium text-zinc-200">Suggested tools:</span>{" "}
-                  {brief.tools}
-                </p>
-              </div>
               <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-zinc-950/70 p-3 font-mono text-xs leading-5 text-zinc-200">
                 {brief.prompt}
               </pre>

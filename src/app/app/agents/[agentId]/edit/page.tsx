@@ -3,7 +3,6 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields";
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
-import { GenericToolOption } from "@/components/app/generic-tool-option";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,19 +14,11 @@ import {
   DEFAULT_SCHEDULE_TIMEZONE,
   readScheduleConfig,
 } from "@/lib/agents/schedules";
-import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
-import { GENERIC_AGENT_TOOLS } from "@/lib/tools/definitions";
 import { updateAgentConfig } from "../../../actions";
 
 type Params = Promise<{ agentId: string }>;
 type SearchParams = Promise<{ workspace?: string }>;
-
-function toolsFromJson(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((tool): tool is string => typeof tool === "string")
-    : [];
-}
 
 export default async function EditAgentPage({
   params,
@@ -59,7 +50,6 @@ export default async function EditAgentPage({
     notFound();
   }
 
-  const selectedTools = new Set(toolsFromJson(agent.tools));
   const schedule = readScheduleConfig(agent.triggerConfig);
 
   return (
@@ -73,7 +63,7 @@ export default async function EditAgentPage({
             </Link>
           </Button>
         }
-        description="Update model, prompt, tools, permissions, and schedule. Active scheduled agents are rescheduled on save."
+        description="Update model, prompt, permissions, and schedule. Safe workspace tools are enabled automatically."
         eyebrow="Agent editor"
         title={`Edit ${agent.name}`}
       />
@@ -230,54 +220,6 @@ export default async function EditAgentPage({
         <div className="space-y-5">
           <Card>
             <CardHeader>
-              <CardTitle>Tools</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-xs uppercase tracking-[0.14em] text-zinc-500">
-                Connectors
-              </p>
-              {connectorCatalog.map((connector) => (
-                <label
-                  className="flex cursor-pointer items-start gap-3 rounded-md border border-white/10 bg-black/20 p-3 text-sm"
-                  key={connector.key}
-                >
-                  <input
-                    className="mt-1 accent-emerald-300"
-                    defaultChecked={selectedTools.has(connector.key)}
-                    name="tools"
-                    type="checkbox"
-                    value={connector.key}
-                  />
-                  <span>
-                    <span className="block font-medium text-white">
-                      {connector.name}
-                    </span>
-                    <span className="mt-1 block leading-5 text-zinc-500">
-                      {connector.summary}
-                    </span>
-                  </span>
-                </label>
-              ))}
-              <p className="pt-2 text-xs uppercase tracking-[0.14em] text-zinc-500">
-                Agent tools
-              </p>
-              {GENERIC_AGENT_TOOLS.map((tool) => (
-                <GenericToolOption
-                  defaultChecked={selectedTools.has(tool.key)}
-                  key={tool.key}
-                  tool={tool}
-                />
-              ))}
-              <Alert>
-                Reads, sandbox code, creating new files, copying templates, and
-                editing run-owned outputs are allowed; destructive changes still
-                require approval.
-              </Alert>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
               <CardTitle>Permissions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -304,7 +246,11 @@ export default async function EditAgentPage({
                 </Select>
               </div>
               <Alert>
-                Active scheduled agents are rescheduled as soon as this form is saved.
+                Agents can automatically search connected memory, run sandbox
+                code, create files, copy templates, and edit files created by
+                their own run. Destructive actions still require approval.
+                Active scheduled agents are rescheduled as soon as this form is
+                saved.
               </Alert>
               <Button className="w-full" type="submit">
                 <Save aria-hidden />

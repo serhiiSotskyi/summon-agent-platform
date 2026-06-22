@@ -1,3 +1,5 @@
+import { connectorCatalog } from "@/lib/connectors/catalog";
+
 const GENERIC_AGENT_TOOL_BASE = [
   {
     key: "python.run",
@@ -229,6 +231,11 @@ export const GENERIC_AGENT_TOOLS = GENERIC_AGENT_TOOL_BASE.map((tool) => ({
 
 export type GenericAgentTool = (typeof GENERIC_AGENT_TOOLS)[number];
 
+export const DEFAULT_AGENT_TOOL_KEYS = [
+  ...connectorCatalog.map((connector) => connector.key),
+  ...GENERIC_AGENT_TOOLS.map((tool) => tool.key),
+];
+
 export function isGenericAgentToolKey(value: string): value is GenericAgentToolKey {
   return GENERIC_AGENT_TOOLS.some((tool) => tool.key === value);
 }
@@ -252,9 +259,11 @@ function hasAnyTool(tools: string[], candidates: string[]) {
 }
 
 export function normalizeAgentToolSelection(selectedTools: string[]) {
-  const tools = selectedTools.filter((tool, index, all) => {
-    return typeof tool === "string" && tool.trim() && all.indexOf(tool) === index;
-  });
+  const tools = [...DEFAULT_AGENT_TOOL_KEYS, ...selectedTools].filter(
+    (tool, index, all) => {
+      return typeof tool === "string" && tool.trim() && all.indexOf(tool) === index;
+    },
+  );
 
   const usesGoogleDrive =
     tools.includes("google-drive") ||

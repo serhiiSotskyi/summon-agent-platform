@@ -47,7 +47,7 @@ const CONNECTOR_CONTEXT_TIMEOUT_MS = 45_000;
 
 function normalizeTools(tools: Prisma.JsonValue) {
   if (!Array.isArray(tools)) {
-    return [];
+    return normalizeAgentToolSelection([]);
   }
 
   return normalizeAgentToolSelection(
