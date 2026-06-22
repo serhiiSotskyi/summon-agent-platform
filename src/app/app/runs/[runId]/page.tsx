@@ -635,9 +635,13 @@ export default async function RunDetailPage({
                 <StatusBadge status={run.status} />
               </div>
             </div>
-            <div className="rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-300">
-              {run.summary ?? "No output yet. Worker execution is queued."}
-            </div>
+            {run.summary ? (
+              <MarkdownOutput content={run.summary} variant="compact" />
+            ) : (
+              <div className="rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-300">
+                No output yet. Worker execution is queued.
+              </div>
+            )}
             {isActiveRun ? (
               <div className="rounded-md border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
                 Live refresh is active. If this stays here for several minutes,

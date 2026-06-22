@@ -2,7 +2,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-const markdownComponents = {
+function createMarkdownComponents(variant: "default" | "compact") {
+  const compact = variant === "compact";
+
+  return {
   a: ({ children, href }) => (
     <a
       className="text-emerald-100 underline underline-offset-4 hover:text-emerald-50"
@@ -14,7 +17,13 @@ const markdownComponents = {
     </a>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="my-5 border-l-2 border-emerald-200/40 pl-4 text-zinc-300">
+    <blockquote
+      className={
+        compact
+          ? "my-3 border-l-2 border-emerald-200/40 pl-3 text-zinc-300"
+          : "my-5 border-l-2 border-emerald-200/40 pl-4 text-zinc-300"
+      }
+    >
       {children}
     </blockquote>
   ),
@@ -23,7 +32,13 @@ const markdownComponents = {
 
     if (isBlock) {
       return (
-        <code className="block overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 font-mono text-xs leading-6 text-zinc-200">
+        <code
+          className={
+            compact
+              ? "block overflow-x-auto rounded-md border border-white/10 bg-black/30 p-3 font-mono text-xs leading-5 text-zinc-200"
+              : "block overflow-x-auto rounded-md border border-white/10 bg-black/30 p-4 font-mono text-xs leading-6 text-zinc-200"
+          }
+        >
           {children}
         </code>
       );
@@ -36,31 +51,67 @@ const markdownComponents = {
     );
   },
   h1: ({ children }) => (
-    <h1 className="mt-8 first:mt-0 text-2xl font-semibold tracking-tight text-white">
+    <h1
+      className={
+        compact
+          ? "mt-4 first:mt-0 text-base font-semibold tracking-tight text-white"
+          : "mt-8 first:mt-0 text-2xl font-semibold tracking-tight text-white"
+      }
+    >
       {children}
     </h1>
   ),
   h2: ({ children }) => (
-    <h2 className="mt-8 first:mt-0 text-xl font-semibold tracking-tight text-white">
+    <h2
+      className={
+        compact
+          ? "mt-4 first:mt-0 text-sm font-semibold tracking-tight text-white"
+          : "mt-8 first:mt-0 text-xl font-semibold tracking-tight text-white"
+      }
+    >
       {children}
     </h2>
   ),
   h3: ({ children }) => (
-    <h3 className="mt-6 first:mt-0 text-lg font-semibold tracking-tight text-white">
+    <h3
+      className={
+        compact
+          ? "mt-3 first:mt-0 text-sm font-semibold tracking-tight text-zinc-100"
+          : "mt-6 first:mt-0 text-lg font-semibold tracking-tight text-white"
+      }
+    >
       {children}
     </h3>
   ),
   h4: ({ children }) => (
-    <h4 className="mt-5 first:mt-0 text-base font-semibold text-zinc-100">
+    <h4
+      className={
+        compact
+          ? "mt-3 first:mt-0 text-sm font-semibold text-zinc-100"
+          : "mt-5 first:mt-0 text-base font-semibold text-zinc-100"
+      }
+    >
       {children}
     </h4>
   ),
-  hr: () => <hr className="my-6 border-white/10" />,
+  hr: () => <hr className={compact ? "my-4 border-white/10" : "my-6 border-white/10"} />,
   li: ({ children }) => <li className="pl-1">{children}</li>,
   ol: ({ children }) => (
-    <ol className="my-4 list-decimal space-y-2 pl-5 text-zinc-200">{children}</ol>
+    <ol
+      className={
+        compact
+          ? "my-2 list-decimal space-y-1.5 pl-5 text-zinc-200"
+          : "my-4 list-decimal space-y-2 pl-5 text-zinc-200"
+      }
+    >
+      {children}
+    </ol>
   ),
-  p: ({ children }) => <p className="my-4 leading-7 text-zinc-200">{children}</p>,
+  p: ({ children }) => (
+    <p className={compact ? "my-2 leading-6 text-zinc-200" : "my-4 leading-7 text-zinc-200"}>
+      {children}
+    </p>
+  ),
   pre: ({ children }) => <pre className="my-4 overflow-x-auto">{children}</pre>,
   strong: ({ children }) => (
     <strong className="font-semibold text-white">{children}</strong>
@@ -82,14 +133,41 @@ const markdownComponents = {
     </th>
   ),
   ul: ({ children }) => (
-    <ul className="my-4 list-disc space-y-2 pl-5 text-zinc-200">{children}</ul>
+    <ul
+      className={
+        compact
+          ? "my-2 list-disc space-y-1.5 pl-5 text-zinc-200"
+          : "my-4 list-disc space-y-2 pl-5 text-zinc-200"
+      }
+    >
+      {children}
+    </ul>
   ),
-} satisfies Components;
+  } satisfies Components;
+}
 
-export function MarkdownOutput({ content }: { content: string }) {
+const markdownComponents = createMarkdownComponents("default");
+const compactMarkdownComponents = createMarkdownComponents("compact");
+
+export function MarkdownOutput({
+  content,
+  variant = "default",
+}: {
+  content: string;
+  variant?: "default" | "compact";
+}) {
   return (
-    <div className="rounded-md border border-white/10 bg-black/20 p-5 text-sm leading-7 text-zinc-200">
-      <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+    <div
+      className={
+        variant === "compact"
+          ? "rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-200"
+          : "rounded-md border border-white/10 bg-black/20 p-5 text-sm leading-7 text-zinc-200"
+      }
+    >
+      <ReactMarkdown
+        components={variant === "compact" ? compactMarkdownComponents : markdownComponents}
+        remarkPlugins={[remarkGfm]}
+      >
         {content}
       </ReactMarkdown>
     </div>
