@@ -11,7 +11,7 @@ type ModelPrice = {
   longContextThresholdTokens?: number;
 };
 
-export const LLM_PRICING_VERSION = "2026-06-08";
+export const LLM_PRICING_VERSION = "2026-06-23";
 
 const MODEL_PRICES: ModelPrice[] = [
   {
@@ -92,6 +92,64 @@ function normalizeModel(model: string) {
   return model.trim().toLowerCase();
 }
 
+function getAnthropicFamilyPrice(model: string): ModelPrice | undefined {
+  if (model.startsWith("claude-fable-5") || model.startsWith("claude-mythos-5")) {
+    return {
+      provider: "anthropic",
+      model,
+      inputPerMillionUsd: 10,
+      outputPerMillionUsd: 50,
+    };
+  }
+
+  if (model.startsWith("claude-opus-4-")) {
+    return {
+      provider: "anthropic",
+      model,
+      inputPerMillionUsd: 5,
+      outputPerMillionUsd: 25,
+    };
+  }
+
+  if (model.startsWith("claude-sonnet-4-")) {
+    return {
+      provider: "anthropic",
+      model,
+      inputPerMillionUsd: 3,
+      outputPerMillionUsd: 15,
+    };
+  }
+
+  if (model.startsWith("claude-haiku-4-")) {
+    return {
+      provider: "anthropic",
+      model,
+      inputPerMillionUsd: 1,
+      outputPerMillionUsd: 5,
+    };
+  }
+
+  return undefined;
+}
+
+function getModelPrice(provider: LlmProvider, model: string) {
+  const normalizedModel = normalizeModel(model);
+  const exactPrice = MODEL_PRICES.find(
+    (item) =>
+      item.provider === provider && normalizeModel(item.model) === normalizedModel,
+  );
+
+  if (exactPrice) {
+    return exactPrice;
+  }
+
+  if (provider === "anthropic") {
+    return getAnthropicFamilyPrice(normalizedModel);
+  }
+
+  return undefined;
+}
+
 export function estimateLlmCost({
   provider,
   model,
@@ -105,10 +163,7 @@ export function estimateLlmCost({
     return null;
   }
 
-  const price = MODEL_PRICES.find(
-    (item) =>
-      item.provider === provider && normalizeModel(item.model) === normalizeModel(model),
-  );
+  const price = getModelPrice(provider, model);
 
   if (!price) {
     return null;
