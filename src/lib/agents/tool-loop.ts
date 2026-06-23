@@ -700,11 +700,11 @@ function inferWorkflowRequirements(input: {
   basePrompt: string;
   availableTools: GenericAgentToolKey[];
 }): WorkflowRequirementState {
+  void input.basePrompt;
   const prompt = [
     input.agent.name,
     input.agent.description,
     input.agent.systemPrompt,
-    input.basePrompt,
     ...input.agent.files.map((file) =>
       [file.name, file.description, file.role, file.url].filter(Boolean).join(" "),
     ),
