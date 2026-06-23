@@ -334,7 +334,7 @@ export async function createAgentDraft(formData: FormData) {
 
   const prompt = getText(formData, "prompt");
   if (!prompt) {
-    throw new Error("Agent prompt is required.");
+    redirect(`/app/agents/new?workspace=${context.workspace.id}&error=prompt_required`);
   }
 
   const providerInput = getText(formData, "llmProvider", "openai");

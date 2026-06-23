@@ -43,6 +43,8 @@ type CreateScheduledAgentRunInput = {
 };
 
 const DEFAULT_AGENT_RUN_TIMEOUT_MS = 600_000;
+const DEFAULT_STALE_RUN_TIMEOUT_MS = 600_000;
+const MANUAL_RUN_DEDUPE_WINDOW_MS = 30_000;
 const CONNECTOR_CONTEXT_TIMEOUT_MS = 45_000;
 
 function normalizeTools(tools: Prisma.JsonValue) {
@@ -119,6 +121,33 @@ function getAgentRunTimeoutMs() {
   return Number.isFinite(parsed) && parsed > 0
     ? parsed
     : DEFAULT_AGENT_RUN_TIMEOUT_MS;
+}
+
+function getStaleRunTimeoutMs() {
+  const raw = process.env.AGENT_RUN_STALE_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : DEFAULT_STALE_RUN_TIMEOUT_MS;
+
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_STALE_RUN_TIMEOUT_MS;
+}
+
+function isCriticalWorkflowOutcome(outcome: string) {
+  return /copy the source\/template deck|create or copy a run-owned google doc|write the required google doc|generated google doc read-back was empty|populate the copied google slides deck|do not stop after creating an empty document/i.test(
+    outcome,
+  );
+}
+
+function hasUsableRunOutput(input: {
+  text: string;
+  artifacts: unknown[];
+  createdGoogleFiles: unknown[];
+}) {
+  return (
+    input.text.replace(/\s+/g, " ").trim().length > 40 ||
+    input.artifacts.length > 0 ||
+    input.createdGoogleFiles.length > 0
+  );
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
@@ -323,6 +352,23 @@ export async function createManualAgentRun(input: CreateManualAgentRunInput) {
     throw new Error("You do not have permission to run agents in this workspace.");
   }
 
+  const existingActiveRun = await db.agentRun.findFirst({
+    where: {
+      agentId: agent.id,
+      triggeredById: input.triggeredById,
+      triggerType: "MANUAL",
+      status: { in: ["QUEUED", "RUNNING"] },
+      triggeredAt: {
+        gte: new Date(Date.now() - MANUAL_RUN_DEDUPE_WINDOW_MS),
+      },
+    },
+    orderBy: { triggeredAt: "desc" },
+  });
+
+  if (existingActiveRun) {
+    return existingActiveRun;
+  }
+
   const run = await db.agentRun.create({
     data: {
       agentId: agent.id,
@@ -354,6 +400,41 @@ export async function createManualAgentRun(input: CreateManualAgentRunInput) {
   }
 
   return run;
+}
+
+export async function markStaleAgentRunsFailed() {
+  const db = getDb();
+  const staleBefore = new Date(Date.now() - getStaleRunTimeoutMs());
+  const staleRuns = await db.agentRun.findMany({
+    where: {
+      status: { in: ["QUEUED", "RUNNING"] },
+      triggeredAt: { lte: staleBefore },
+      toolCalls: { none: {} },
+    },
+    select: {
+      id: true,
+      triggeredAt: true,
+    },
+    take: 50,
+  });
+
+  await Promise.all(
+    staleRuns.map((run) =>
+      db.agentRun.update({
+        where: { id: run.id },
+        data: {
+          status: "FAILED",
+          summary: "Run stalled before any tool calls.",
+          error:
+            "This run did not record any tool activity before the platform timeout. Retry the run; if this repeats, check the worker logs.",
+          completedAt: new Date(),
+          durationMs: Date.now() - run.triggeredAt.getTime(),
+        },
+      }),
+    ),
+  );
+
+  return staleRuns.length;
 }
 
 export async function createScheduledAgentRun(input: CreateScheduledAgentRunInput) {
@@ -498,6 +579,27 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       tools: toolLoopResult.protectedActionRequests,
       actionPermissionMode: run.agent.actionPermissionMode,
     });
+    const unresolvedWorkflowOutcomes = toolLoopResult.unresolvedWorkflowOutcomes ?? [];
+    const criticalWorkflowOutcomes = unresolvedWorkflowOutcomes.filter(
+      isCriticalWorkflowOutcome,
+    );
+    const completedWithIssues =
+      unresolvedWorkflowOutcomes.length > 0 &&
+      criticalWorkflowOutcomes.length === 0 &&
+      hasUsableRunOutput({
+        text: result.text,
+        artifacts: toolLoopResult.artifacts,
+        createdGoogleFiles: toolLoopResult.createdGoogleFiles,
+      });
+    const status =
+      unresolvedWorkflowOutcomes.length === 0 || completedWithIssues
+        ? "SUCCESS"
+        : "FAILED";
+    const completionState = completedWithIssues
+      ? "completed_with_issues"
+      : status === "SUCCESS"
+        ? "complete"
+        : "failed";
     const output: Prisma.InputJsonObject = {
       mode:
         toolLoopResult.toolCalls.length > 0
@@ -530,11 +632,14 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       blockers: [
         ...connectorContext.blockers,
         ...toolLoopResult.protectedActionRequests,
-        ...(toolLoopResult.unresolvedWorkflowOutcomes ?? []),
+        ...unresolvedWorkflowOutcomes,
       ],
       workflowStatus: toolLoopResult.workflowStatus,
+      completionState,
+      criticalWorkflowOutcomes:
+        criticalWorkflowOutcomes as unknown as Prisma.InputJsonValue,
       unresolvedWorkflowOutcomes:
-        (toolLoopResult.unresolvedWorkflowOutcomes ?? []) as unknown as Prisma.InputJsonValue,
+        unresolvedWorkflowOutcomes as unknown as Prisma.InputJsonValue,
       toolResults: toolLoopResult.toolResults as unknown as Prisma.InputJsonValue,
       createdGoogleFiles:
         toolLoopResult.createdGoogleFiles as unknown as Prisma.InputJsonValue,
@@ -546,14 +651,13 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
         : "Read-only connector calls may have been executed. No external writes, sends, budget edits, or campaign changes were made.",
     };
 
-    const unresolvedWorkflowOutcomes = toolLoopResult.unresolvedWorkflowOutcomes ?? [];
-    const status = unresolvedWorkflowOutcomes.length > 0 ? "FAILED" : "SUCCESS";
-    const summary =
-      unresolvedWorkflowOutcomes.length > 0
-        ? "Agent run completed with unresolved workflow blockers."
+    const summary = completedWithIssues
+      ? "Completed with issues. The main output is available, but one or more secondary checks or publish steps need review."
+      : unresolvedWorkflowOutcomes.length > 0
+        ? "Agent run stopped before the required output was verified."
         : summarizeOutput(result.text);
     const error =
-      unresolvedWorkflowOutcomes.length > 0
+      status === "FAILED" && unresolvedWorkflowOutcomes.length > 0
         ? unresolvedWorkflowOutcomes.join(" ")
         : null;
 

@@ -8,6 +8,9 @@ export function StatusBadge({ status }: { status: string }) {
     normalized.includes("succeeded") ||
     normalized.includes("approved")
       ? "success"
+      : normalized.includes("completed with issues") ||
+          normalized.includes("completed_with_issues")
+        ? "warning"
       : normalized.includes("pending") ||
           normalized.includes("queued") ||
           normalized.includes("draft")

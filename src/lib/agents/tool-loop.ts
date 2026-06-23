@@ -20,6 +20,7 @@ import {
   updateGoogleSlidesTableCell,
   updateGoogleSlidesTextElement,
   updateGoogleSheetRange,
+  writeMarkdownToGoogleDoc,
 } from "@/lib/connectors/write";
 import { getDb } from "@/lib/db";
 import type { LlmProvider } from "@/lib/env";
@@ -103,6 +104,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asString(value: unknown, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function asNumber(value: unknown, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function asStringArray(value: unknown) {
@@ -712,7 +717,7 @@ function inferWorkflowRequirements(input: {
     (input.availableTools.includes("google.slides.replaceText") ||
       input.availableTools.includes("google.slides.batchUpdate"));
   const mentionsSlidesOutput =
-    /\b(deck|slide|slides|presentation|google slides|qbr|report)\b/.test(prompt);
+    /\b(deck|slide|slides|presentation|google slides|qbr)\b/.test(prompt);
   const asksToCreateOrPopulate =
     /\b(create|generate|recreate|populate|update|edit|replace|build|produce)\b/.test(prompt);
 
@@ -776,6 +781,11 @@ function hasRunOwnedGoogleDoc(results: unknown[]) {
 
 function hasMeaningfulGoogleDocWrite(results: unknown[]) {
   return successfulToolResults(results).some((result) => {
+    if (result.toolName === "google.docs.createDocument") {
+      const writeResult = asRecord(asRecord(result.result).writeResult);
+      return asNumber(writeResult.requestCount) > 0;
+    }
+
     if (result.toolName === "google.docs.batchUpdate") {
       return true;
     }
@@ -789,6 +799,61 @@ function hasMeaningfulGoogleDocWrite(results: unknown[]) {
       const changed = replacement.occurrencesChanged;
       return typeof changed === "number" && changed > 0;
     });
+  });
+}
+
+function latestGoogleDocId(results: unknown[]) {
+  const docResult = [...successfulToolResults(results)]
+    .reverse()
+    .find((result) => {
+      if (result.toolName === "google.docs.createDocument") {
+        return true;
+      }
+
+      if (result.toolName !== "google.drive.copyFile") {
+        return false;
+      }
+
+      const mimeType = asString(asRecord(result.result).mimeType);
+      return mimeType === "application/vnd.google-apps.document";
+    });
+  const result = asRecord(docResult?.result);
+
+  return (
+    asString(result.documentId) ||
+    asString(result.fileId) ||
+    asString(result.id)
+  );
+}
+
+function verifiedGoogleDocRead(results: unknown[]) {
+  const createdWithVerification = [...successfulToolResults(results)]
+    .reverse()
+    .find((result) => {
+      if (result.toolName !== "google.docs.createDocument") {
+        return false;
+      }
+
+      const verification = asRecord(asRecord(result.result).verification);
+      return asNumber(verification.textLength) > 20;
+    });
+
+  if (createdWithVerification) {
+    return true;
+  }
+
+  return successfulToolResults(results).some((result) => {
+    if (result.toolName !== "google.docs.readText") {
+      return false;
+    }
+
+    const payload = asRecord(result.result);
+    const text =
+      asString(payload.text) ||
+      asString(payload.preview) ||
+      asString(payload.content);
+
+    return text.replace(/\s+/g, " ").trim().length > 20;
   });
 }
 
@@ -867,10 +932,12 @@ function missingWorkflowOutcomes(input: {
       );
     } else if (
       input.availableTools.includes("google.docs.readText") &&
-      !hasSuccessfulTool(input.toolResults, "google.docs.readText")
+      !verifiedGoogleDocRead(input.toolResults)
     ) {
       missing.push(
-        "Read back the generated Google Doc with google.docs.readText to verify the output before finalizing.",
+        hasSuccessfulTool(input.toolResults, "google.docs.readText")
+          ? "Generated Google Doc read-back was empty. Write useful document content before finalizing."
+          : "Read back the generated Google Doc with google.docs.readText to verify the output before finalizing.",
       );
     }
   }
@@ -4100,6 +4167,24 @@ function deterministicWorkflowCalls(input: {
   }
 
   if (
+    input.requirements.requiresGoogleDocWrite &&
+    input.availableTools.includes("google.docs.readText") &&
+    hasMeaningfulGoogleDocWrite(input.toolResults) &&
+    !verifiedGoogleDocRead(input.toolResults)
+  ) {
+    const documentId = latestGoogleDocId(input.toolResults);
+    if (documentId) {
+      calls.push({
+        tool: "google.docs.readText",
+        reason:
+          "Verify the generated Google Doc is non-empty before finalizing the run.",
+        input: { documentId },
+      });
+      return calls;
+    }
+  }
+
+  if (
     input.requirements.requiresNotionPublish &&
     hasMeaningfulSlidesWrite(input.toolResults) &&
     (!input.availableTools.includes("google.slides.auditDeck") ||
@@ -4377,6 +4462,8 @@ function schemaForTool(tool: GenericAgentToolKey) {
     case "google.docs.createDocument":
       return {
         title: "new Google Doc title",
+        content:
+          "optional markdown content to insert immediately; headings, lists, bold text, links, and tables should be written here when creating a report/brief",
       };
     case "google.docs.readText":
       return {
@@ -4500,6 +4587,7 @@ function buildPlannerPrompt(input: {
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
     "For Google Docs template work, first copy or create the document, then replace placeholders or batch update only the copied/run-owned Doc.",
+    "When creating a new Google Doc report/brief, pass the complete markdown body in google.docs.createDocument.content so the platform can insert and verify formatted content immediately. Do not create an empty Doc and stop.",
     "For spreadsheet/table outputs, use google.sheets.createSpreadsheet to create a run-owned native Google Sheet, seed rows when available, then use google.sheets.updateRange/readRange for follow-up edits and verification.",
     "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
     "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
@@ -5076,8 +5164,40 @@ async function executeOneTool(input: {
         workspaceId: input.workspaceId,
         title: asString(request.title, `${input.agent.name} generated doc`),
       });
+      const content = asString(request.content);
+      const writeResult = content
+        ? await writeMarkdownToGoogleDoc({
+            workspaceId: input.workspaceId,
+            documentId: created.documentId,
+            markdown: content,
+          })
+        : null;
+      const verification = content
+        ? await readGoogleDocText({
+            workspaceId: input.workspaceId,
+            documentId: created.documentId,
+          })
+        : null;
+      if (content && asString(asRecord(verification).text).length < 20) {
+        throw new Error(
+          "Google Docs createDocument verification failed: generated document is empty after write.",
+        );
+      }
       input.state.createdGoogleFileIds.add(created.fileId);
       input.state.createdGoogleFiles.push(created);
+      result = {
+        ...created,
+        ...(writeResult ? { writeResult } : {}),
+        ...(verification
+          ? {
+              verification: {
+                title: asRecord(verification).title,
+                textLength: asString(asRecord(verification).text).length,
+                preview: compactText(asRecord(verification).preview, 1200),
+              },
+            }
+          : {}),
+      };
       const artifact = artifactOutput(
         await createArtifact({
           agentRunId: input.agentRunId,
@@ -5086,11 +5206,10 @@ async function executeOneTool(input: {
           name: created.fileName,
           location: created.webViewLink,
           mimeType: created.mimeType,
-          payload: created,
+          payload: asRecord(result),
         }),
       );
       artifacts.push(artifact);
-      result = created;
     }
 
     if (toolName === "google.docs.readText") {

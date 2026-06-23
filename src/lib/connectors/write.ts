@@ -1709,6 +1709,204 @@ function applyGoogleDocTextFallbackRequests(input: {
   return { text, replies };
 }
 
+type MarkdownStyleRange = {
+  startIndex: number;
+  endIndex: number;
+  type: "heading1" | "heading2" | "heading3" | "bullet" | "numbered" | "bold";
+};
+
+function cleanInlineMarkdown(line: string) {
+  let output = "";
+  const boldRanges: Array<{ start: number; end: number }> = [];
+  let index = 0;
+
+  while (index < line.length) {
+    const boldStart = line.indexOf("**", index);
+    const linkStart = line.indexOf("[", index);
+    const nextSpecial = [boldStart, linkStart]
+      .filter((value) => value >= 0)
+      .sort((a, b) => a - b)[0];
+
+    if (nextSpecial === undefined) {
+      output += line.slice(index);
+      break;
+    }
+
+    output += line.slice(index, nextSpecial);
+
+    if (nextSpecial === boldStart) {
+      const boldEnd = line.indexOf("**", boldStart + 2);
+      if (boldEnd < 0) {
+        output += line.slice(boldStart);
+        break;
+      }
+      const start = output.length;
+      output += line.slice(boldStart + 2, boldEnd);
+      const end = output.length;
+      if (end > start) {
+        boldRanges.push({ start, end });
+      }
+      index = boldEnd + 2;
+      continue;
+    }
+
+    const labelEnd = line.indexOf("]", linkStart + 1);
+    const urlStart = labelEnd >= 0 ? line.indexOf("(", labelEnd + 1) : -1;
+    const urlEnd = urlStart >= 0 ? line.indexOf(")", urlStart + 1) : -1;
+    if (labelEnd >= 0 && urlStart === labelEnd + 1 && urlEnd > urlStart) {
+      const label = line.slice(linkStart + 1, labelEnd);
+      const url = line.slice(urlStart + 1, urlEnd);
+      output += url ? `${label} (${url})` : label;
+      index = urlEnd + 1;
+      continue;
+    }
+
+    output += line[nextSpecial];
+    index = nextSpecial + 1;
+  }
+
+  return {
+    text: output.replace(/`([^`]+)`/g, "$1").replace(/_{2}([^_]+)_{2}/g, "$1"),
+    boldRanges,
+  };
+}
+
+function markdownToGoogleDocRequests(markdown: string) {
+  const textParts: string[] = [];
+  const styles: MarkdownStyleRange[] = [];
+
+  for (const rawLine of markdown.replace(/\r\n/g, "\n").split("\n")) {
+    const paragraphStartIndex = 1 + textParts.join("").length;
+    const trimmed = rawLine.trim();
+    let type: MarkdownStyleRange["type"] | null = null;
+    let line = rawLine;
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      type =
+        heading[1].length === 1
+          ? "heading1"
+          : heading[1].length === 2
+            ? "heading2"
+            : "heading3";
+      line = heading[2];
+    } else if (/^[-*]\s+/.test(trimmed)) {
+      type = "bullet";
+      line = trimmed.replace(/^[-*]\s+/, "");
+    } else if (/^\d+[.)]\s+/.test(trimmed)) {
+      type = "numbered";
+      line = trimmed.replace(/^\d+[.)]\s+/, "");
+    }
+
+    const { text, boldRanges } = cleanInlineMarkdown(line);
+    textParts.push(`${text}\n`);
+    const paragraphEndIndex = paragraphStartIndex + text.length + 1;
+
+    if (type && text.trim()) {
+      styles.push({
+        startIndex: paragraphStartIndex,
+        endIndex: paragraphEndIndex,
+        type,
+      });
+    }
+
+    for (const range of boldRanges) {
+      styles.push({
+        startIndex: paragraphStartIndex + range.start,
+        endIndex: paragraphStartIndex + range.end,
+        type: "bold",
+      });
+    }
+  }
+
+  const text = textParts.join("").trimEnd();
+  const requests: Record<string, unknown>[] = [
+    {
+      insertText: {
+        location: { index: 1 },
+        text,
+      },
+    },
+  ];
+
+  for (const style of styles) {
+    if (style.endIndex <= style.startIndex) {
+      continue;
+    }
+
+    if (style.type === "bold") {
+      requests.push({
+        updateTextStyle: {
+          range: {
+            startIndex: style.startIndex,
+            endIndex: style.endIndex,
+          },
+          textStyle: { bold: true },
+          fields: "bold",
+        },
+      });
+      continue;
+    }
+
+    if (style.type === "bullet" || style.type === "numbered") {
+      requests.push({
+        createParagraphBullets: {
+          range: {
+            startIndex: style.startIndex,
+            endIndex: style.endIndex,
+          },
+          bulletPreset:
+            style.type === "numbered"
+              ? "NUMBERED_DECIMAL_ALPHA_ROMAN"
+              : "BULLET_DISC_CIRCLE_SQUARE",
+        },
+      });
+      continue;
+    }
+
+    requests.push({
+      updateParagraphStyle: {
+        range: {
+          startIndex: style.startIndex,
+          endIndex: style.endIndex,
+        },
+        paragraphStyle: {
+          namedStyleType:
+            style.type === "heading1"
+              ? "HEADING_1"
+              : style.type === "heading2"
+                ? "HEADING_2"
+                : "HEADING_3",
+        },
+        fields: "namedStyleType",
+      },
+    });
+  }
+
+  return requests;
+}
+
+export async function writeMarkdownToGoogleDoc(input: {
+  workspaceId: string;
+  documentId: string;
+  markdown: string;
+}) {
+  const markdown = input.markdown.trim();
+  if (!markdown) {
+    return {
+      documentId: input.documentId,
+      requestCount: 0,
+      skipped: true,
+    };
+  }
+
+  return batchUpdateGoogleDoc({
+    workspaceId: input.workspaceId,
+    documentId: input.documentId,
+    requests: markdownToGoogleDocRequests(markdown),
+  });
+}
+
 export async function createGoogleDoc(input: {
   workspaceId: string;
   title: string;

@@ -2,6 +2,7 @@ import { ClipboardCheck } from "lucide-react";
 import Link from "next/link";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
+import { PendingSubmitButton } from "@/components/app/pending-submit-button";
 import { StatusBadge } from "@/components/app/status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -146,9 +147,13 @@ export default async function ApprovalsPage({
                               value={context.workspace.id}
                             />
                             <input name="status" type="hidden" value="APPROVED" />
-                            <Button size="sm" type="submit">
+                            <PendingSubmitButton
+                              pendingLabel="Approving..."
+                              size="sm"
+                              type="submit"
+                            >
                               Approve
-                            </Button>
+                            </PendingSubmitButton>
                           </form>
                           <form action={updateApprovalStatus}>
                             <input
@@ -162,9 +167,14 @@ export default async function ApprovalsPage({
                               value={context.workspace.id}
                             />
                             <input name="status" type="hidden" value="REJECTED" />
-                            <Button size="sm" type="submit" variant="secondary">
+                            <PendingSubmitButton
+                              pendingLabel="Rejecting..."
+                              size="sm"
+                              type="submit"
+                              variant="secondary"
+                            >
                               Reject
-                            </Button>
+                            </PendingSubmitButton>
                           </form>
                         </div>
                       </TD>

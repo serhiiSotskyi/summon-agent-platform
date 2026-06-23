@@ -61,15 +61,15 @@ function readMissingTools(output: Prisma.JsonValue) {
   return [];
 }
 
-function readOutputMode(output: Prisma.JsonValue) {
+function readCompletionState(output: Prisma.JsonValue) {
   if (
     output &&
     typeof output === "object" &&
     !Array.isArray(output) &&
-    "mode" in output &&
-    typeof output.mode === "string"
+    "completionState" in output &&
+    typeof output.completionState === "string"
   ) {
-    return output.mode;
+    return output.completionState;
   }
 
   return null;
@@ -564,7 +564,7 @@ export default async function RunDetailPage({
   }
 
   const outputText = readOutputText(run.output);
-  const outputMode = readOutputMode(run.output);
+  const completionState = readCompletionState(run.output);
   const connectorResults = readConnectorResults(run.output);
   const missingTools = readMissingTools(run.output);
   const approvalDecision = readApprovalDecision(run.output);
@@ -573,6 +573,11 @@ export default async function RunDetailPage({
   const dbArtifacts = readDbArtifacts(run.artifacts);
   const toolCalls = dbToolCalls.length > 0 ? dbToolCalls : readToolCalls(run.output);
   const artifacts = dbArtifacts.length > 0 ? dbArtifacts : readArtifacts(run.output);
+  const deliverableArtifacts = artifacts.filter((artifact) => artifact.url);
+  const effectiveStatus =
+    completionState === "completed_with_issues"
+      ? "COMPLETED_WITH_ISSUES"
+      : run.status;
   const runCaveats = readRunCaveats(run.output);
   const isActiveRun = run.status === "QUEUED" || run.status === "RUNNING";
 
@@ -632,7 +637,7 @@ export default async function RunDetailPage({
                 Status
               </p>
               <div className="mt-2">
-                <StatusBadge status={run.status} />
+                <StatusBadge status={effectiveStatus} />
               </div>
             </div>
             {run.summary ? (
@@ -699,6 +704,49 @@ export default async function RunDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      {(deliverableArtifacts.length > 0 || outputText) ? (
+        <Card className="mt-5 border-emerald-300/20 bg-emerald-300/[0.03]">
+          <CardHeader>
+            <CardTitle>Your output</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {deliverableArtifacts.length > 0 ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                {deliverableArtifacts.slice(0, 6).map((artifact) => (
+                  <Link
+                    className="rounded-md border border-emerald-300/20 bg-black/20 p-4 transition hover:bg-emerald-300/10"
+                    href={artifact.url ?? "#"}
+                    key={artifact.id}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    <p className="text-sm font-medium text-emerald-50">
+                      {artifact.label}
+                    </p>
+                    <p className="mt-2 text-xs uppercase tracking-[0.14em] text-emerald-100/60">
+                      {artifact.type ?? "artifact"}
+                    </p>
+                    {artifact.summary ? (
+                      <p className="mt-2 line-clamp-2 text-sm leading-6 text-zinc-300">
+                        {artifact.summary}
+                      </p>
+                    ) : null}
+                  </Link>
+                ))}
+              </div>
+            ) : null}
+            {outputText ? (
+              <div>
+                <p className="mb-3 text-xs uppercase tracking-[0.14em] text-zinc-500">
+                  Response
+                </p>
+                <MarkdownOutput content={outputText} />
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {costMetadata?.usage ? (
         <Card className="mt-5">
@@ -835,19 +883,6 @@ export default async function RunDetailPage({
                 ) : null}
               </div>
             ))}
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {outputText ? (
-        <Card className="mt-5">
-          <CardHeader>
-            <CardTitle>
-              {outputMode === "read_only" ? "Read-only output" : "Run output"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <MarkdownOutput content={outputText} />
           </CardContent>
         </Card>
       ) : null}

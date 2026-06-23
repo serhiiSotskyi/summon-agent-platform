@@ -15,6 +15,7 @@ import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { EmptyState } from "@/components/app/empty-state";
 import { PageHeader } from "@/components/app/page-header";
+import { PendingSubmitButton } from "@/components/app/pending-submit-button";
 import { RunEvidenceCounts } from "@/components/app/run-evidence-counts";
 import { StatusBadge } from "@/components/app/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -118,10 +119,10 @@ export default async function AgentDetailPage({
                   type="hidden"
                   value={context.workspace.id}
                 />
-                <Button type="submit">
+                <PendingSubmitButton pendingLabel="Activating..." type="submit">
                   <Rocket aria-hidden />
                   Activate
-                </Button>
+                </PendingSubmitButton>
               </form>
             ) : null}
             {canEdit && agent.status === "ACTIVE" ? (
@@ -132,10 +133,14 @@ export default async function AgentDetailPage({
                   type="hidden"
                   value={context.workspace.id}
                 />
-                <Button type="submit" variant="secondary">
+                <PendingSubmitButton
+                  pendingLabel="Pausing..."
+                  type="submit"
+                  variant="secondary"
+                >
                   <Pause aria-hidden />
                   Pause
-                </Button>
+                </PendingSubmitButton>
               </form>
             ) : null}
             {!demo ? (
@@ -146,10 +151,10 @@ export default async function AgentDetailPage({
                   type="hidden"
                   value={context.workspace.id}
                 />
-                <Button type="submit">
+                <PendingSubmitButton pendingLabel="Starting run..." type="submit">
                   <Play aria-hidden />
                   Run test
-                </Button>
+                </PendingSubmitButton>
               </form>
             ) : null}
           </>

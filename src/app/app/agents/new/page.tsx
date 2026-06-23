@@ -4,16 +4,16 @@ import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { AgentStarterBriefs } from "@/components/app/agent-starter-briefs";
 import { LlmModelFields } from "@/components/app/llm-model-fields";
 import { PageHeader } from "@/components/app/page-header";
+import { PendingSubmitButton } from "@/components/app/pending-submit-button";
 import { ScheduleFields } from "@/components/app/schedule-fields";
 import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/form";
 import { getCurrentUserContext } from "@/lib/app/context";
 import { getDefaultLlmSettings } from "@/lib/env";
 import { createAgentDraft } from "../../actions";
 
-type SearchParams = Promise<{ workspace?: string; demo?: string }>;
+type SearchParams = Promise<{ workspace?: string; demo?: string; error?: string }>;
 
 export default async function NewAgentPage({
   searchParams,
@@ -48,10 +48,16 @@ export default async function NewAgentPage({
             <CardTitle>Describe the job</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
+            {params.error === "prompt_required" ? (
+              <Alert>
+                Add a plain-English prompt before saving the agent.
+              </Alert>
+            ) : null}
             <div className="space-y-2">
               <Label htmlFor="prompt">Plain-English prompt</Label>
               <Textarea
                 id="prompt"
+                minLength={10}
                 name="prompt"
                 placeholder="Review paid acquisition performance every Monday and draft a client-ready update."
                 required
@@ -145,20 +151,27 @@ export default async function NewAgentPage({
                 when full access is selected.
               </Alert>
               <div className="grid gap-3">
-                <Button className="w-full" name="intent" type="submit" value="activate">
-                  <Rocket aria-hidden />
-                  Save and activate
-                </Button>
-                <Button
+                <PendingSubmitButton
                   className="w-full"
                   name="intent"
+                  pendingLabel="Saving..."
+                  type="submit"
+                  value="activate"
+                >
+                  <Rocket aria-hidden />
+                  Save and activate
+                </PendingSubmitButton>
+                <PendingSubmitButton
+                  className="w-full"
+                  name="intent"
+                  pendingLabel="Saving..."
                   type="submit"
                   value="draft"
                   variant="secondary"
                 >
                   <Bot aria-hidden />
                   Save draft
-                </Button>
+                </PendingSubmitButton>
               </div>
             </CardContent>
           </Card>

@@ -3,6 +3,7 @@ import {
   createScheduledAgentRun,
   executeAgentRun,
   executeApprovedAction,
+  markStaleAgentRunsFailed,
 } from "../src/lib/agents/runs";
 import {
   registerAgentScheduler,
@@ -109,8 +110,20 @@ async function registerWorkers(boss: PgBoss) {
   ]);
 }
 
+let staleRunSweepInterval: ReturnType<typeof setInterval> | undefined;
+
+async function sweepStaleRuns() {
+  const failedCount = await markStaleAgentRunsFailed();
+  if (failedCount > 0) {
+    console.log(`[agent-runs] marked ${failedCount} stale zero-tool run${failedCount === 1 ? "" : "s"} as failed`);
+  }
+}
+
 async function shutdown(signal: string) {
   console.log(`[agent-runs] received ${signal}, shutting down`);
+  if (staleRunSweepInterval) {
+    clearInterval(staleRunSweepInterval);
+  }
   await stopAgentRunBoss();
   process.exit(0);
 }
@@ -122,6 +135,12 @@ async function main() {
   const boss = await getAgentRunBoss();
   await ensureAgentRunQueues();
   await registerWorkers(boss);
+  await sweepStaleRuns();
+  staleRunSweepInterval = setInterval(() => {
+    void sweepStaleRuns().catch((error: Error) => {
+      console.error(`[agent-runs] stale run sweep failed: ${error.message}`);
+    });
+  }, 60_000);
   const count = await syncActiveAgentSchedulers();
 
   console.log(`[agent-runs] synced ${count} active scheduled agent${count === 1 ? "" : "s"}`);

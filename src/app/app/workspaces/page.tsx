@@ -1,9 +1,9 @@
 import { Link2, Mail, Plus, RotateCw, Users, XCircle } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "@/components/app/page-header";
+import { PendingSubmitButton } from "@/components/app/pending-submit-button";
 import { StatusBadge } from "@/components/app/status-badge";
 import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -258,10 +258,15 @@ export default async function WorkspacesPage({
                                 type="hidden"
                                 value={invitation.id}
                               />
-                              <Button size="sm" type="submit" variant="secondary">
+                              <PendingSubmitButton
+                                pendingLabel="Sending..."
+                                size="sm"
+                                type="submit"
+                                variant="secondary"
+                              >
                                 <RotateCw aria-hidden />
                                 Resend
-                              </Button>
+                              </PendingSubmitButton>
                             </form>
                             <form action={generateWorkspaceInvitationLink}>
                               <input
@@ -274,10 +279,15 @@ export default async function WorkspacesPage({
                                 type="hidden"
                                 value={invitation.id}
                               />
-                              <Button size="sm" type="submit" variant="secondary">
+                              <PendingSubmitButton
+                                pendingLabel="Generating..."
+                                size="sm"
+                                type="submit"
+                                variant="secondary"
+                              >
                                 <Link2 aria-hidden />
                                 Get link
-                              </Button>
+                              </PendingSubmitButton>
                             </form>
                             <form action={revokeWorkspaceInvitation}>
                               <input
@@ -290,10 +300,15 @@ export default async function WorkspacesPage({
                                 type="hidden"
                                 value={invitation.id}
                               />
-                              <Button size="sm" type="submit" variant="ghost">
+                              <PendingSubmitButton
+                                pendingLabel="Revoking..."
+                                size="sm"
+                                type="submit"
+                                variant="ghost"
+                              >
                                 <XCircle aria-hidden />
                                 Revoke
-                              </Button>
+                              </PendingSubmitButton>
                             </form>
                           </div>
                         ) : (
@@ -344,10 +359,10 @@ export default async function WorkspacesPage({
                     <option value="VIEWER">Viewer</option>
                   </Select>
                 </div>
-                <Button type="submit">
+                <PendingSubmitButton pendingLabel="Sending..." type="submit">
                   <Mail aria-hidden />
                   Send invite
-                </Button>
+                </PendingSubmitButton>
               </form>
             ) : null}
 
@@ -372,10 +387,10 @@ export default async function WorkspacesPage({
                 <Label htmlFor="name">Workspace name</Label>
                 <Input id="name" name="name" placeholder="Client or team name" />
               </div>
-              <Button type="submit">
+              <PendingSubmitButton pendingLabel="Creating..." type="submit">
                 <Plus aria-hidden />
                 Create workspace
-              </Button>
+              </PendingSubmitButton>
             </form>
             <div className="mt-5 rounded-md border border-white/10 bg-black/20 p-4 text-sm leading-6 text-zinc-400">
               <Users aria-hidden className="mb-3 size-4 text-zinc-300" />

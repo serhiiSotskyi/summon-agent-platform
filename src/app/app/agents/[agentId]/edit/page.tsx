@@ -5,6 +5,7 @@ import { AgentFileUploadFields } from "@/components/app/agent-file-upload-fields
 import { AgentReferenceFields } from "@/components/app/agent-reference-fields";
 import { LlmModelFields } from "@/components/app/llm-model-fields";
 import { PageHeader } from "@/components/app/page-header";
+import { PendingSubmitButton } from "@/components/app/pending-submit-button";
 import { ScheduleFields } from "@/components/app/schedule-fields";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -193,10 +194,14 @@ export default async function EditAgentPage({
                 Active scheduled agents are rescheduled as soon as this form is
                 saved.
               </Alert>
-              <Button className="w-full" type="submit">
+              <PendingSubmitButton
+                className="w-full"
+                pendingLabel="Saving changes..."
+                type="submit"
+              >
                 <Save aria-hidden />
                 Save changes
-              </Button>
+              </PendingSubmitButton>
             </CardContent>
           </Card>
         </div>
