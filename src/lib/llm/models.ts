@@ -39,6 +39,40 @@ function sortModels(models: LlmModelOption[]) {
   return [...models].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function anthropicModelRank(id: string) {
+  const model = id.toLowerCase();
+
+  if (model.startsWith("claude-haiku-4-5")) {
+    return 0;
+  }
+
+  if (model.startsWith("claude-sonnet-4-6")) {
+    return 1;
+  }
+
+  if (model.startsWith("claude-sonnet-4-5")) {
+    return 2;
+  }
+
+  if (model.startsWith("claude-opus-4-")) {
+    return 3;
+  }
+
+  if (model.startsWith("claude-fable-") || model.startsWith("claude-mythos-")) {
+    return 4;
+  }
+
+  return 5;
+}
+
+function sortAnthropicModels(models: LlmModelOption[]) {
+  return [...models].sort(
+    (a, b) =>
+      anthropicModelRank(a.id) - anthropicModelRank(b.id) ||
+      a.id.localeCompare(b.id),
+  );
+}
+
 function isOpenAiAgentModel(id: string) {
   const model = id.toLowerCase();
   const excludedTerms = [
@@ -104,18 +138,20 @@ async function listAnthropicModels(): Promise<LlmModelOption[]> {
     data?: Array<{ id?: unknown; display_name?: unknown }>;
   };
 
-  return uniqueModels(
-    (payload.data ?? [])
-      .map((model) => ({
-        id: typeof model.id === "string" ? model.id : "",
-        label:
-          typeof model.display_name === "string" && model.display_name.trim()
-            ? model.display_name
-            : modelLabel(typeof model.id === "string" ? model.id : ""),
-        provider: "anthropic" as const,
-        source: "anthropic-models-api" as const,
-      }))
-      .filter((model) => model.id),
+  return sortAnthropicModels(
+    uniqueModels(
+      (payload.data ?? [])
+        .map((model) => ({
+          id: typeof model.id === "string" ? model.id : "",
+          label:
+            typeof model.display_name === "string" && model.display_name.trim()
+              ? model.display_name
+              : modelLabel(typeof model.id === "string" ? model.id : ""),
+          provider: "anthropic" as const,
+          source: "anthropic-models-api" as const,
+        }))
+        .filter((model) => model.id),
+    ),
   );
 }
 

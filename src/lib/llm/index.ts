@@ -35,7 +35,7 @@ function resolveModel(provider: LlmProvider, requestedModel?: string) {
   }
 
   if (provider === "anthropic") {
-    return "claude-sonnet-4-5";
+    return "claude-haiku-4-5-20251001";
   }
 
   return "gemini-2.5-pro";
@@ -87,6 +87,49 @@ function makeUsage(input: {
   };
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function providerErrorStatus(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+
+  const status = "status" in error ? error.status : undefined;
+  return typeof status === "number" ? status : undefined;
+}
+
+function isTransientProviderError(error: unknown) {
+  const status = providerErrorStatus(error);
+
+  if (status && [408, 409, 425, 429, 500, 502, 503, 504, 529].includes(status)) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return message.includes("overloaded") || message.includes("temporarily unavailable");
+}
+
+async function withProviderRetry<T>(operation: () => Promise<T>) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientProviderError(error) || attempt === 2) {
+        throw error;
+      }
+
+      await delay(750 * 2 ** attempt);
+    }
+  }
+
+  throw lastError;
+}
+
 function withCost(result: Omit<GenerateTextResult, "estimatedCostUsd">) {
   return {
     ...result,
@@ -108,10 +151,12 @@ class OpenAiLlmClient implements LlmClient {
     const model = resolveModel(this.provider, request.model);
     const client = new OpenAI({ apiKey: requireEnv("OPENAI_API_KEY") });
 
-    const response = await client.responses.create({
-      model,
-      input: combinePrompt(request),
-    });
+    const response = await withProviderRetry(() =>
+      client.responses.create({
+        model,
+        input: combinePrompt(request),
+      }),
+    );
 
     const usage = makeUsage({
       inputTokens: response.usage?.input_tokens,
@@ -139,12 +184,14 @@ class AnthropicLlmClient implements LlmClient {
     const model = resolveModel(this.provider, request.model);
     const client = new Anthropic({ apiKey: requireEnv("ANTHROPIC_API_KEY") });
 
-    const response = await client.messages.create({
-      model,
-      max_tokens: 4096,
-      system: request.systemPrompt,
-      messages: [{ role: "user", content: request.prompt }],
-    });
+    const response = await withProviderRetry(() =>
+      client.messages.create({
+        model,
+        max_tokens: 4096,
+        system: request.systemPrompt,
+        messages: [{ role: "user", content: request.prompt }],
+      }),
+    );
 
     const text = response.content
       .map((part) => (part.type === "text" ? part.text : ""))
@@ -180,7 +227,9 @@ class GoogleLlmClient implements LlmClient {
       requireEnv("GOOGLE_GENERATIVE_AI_API_KEY"),
     );
     const generativeModel = client.getGenerativeModel({ model });
-    const response = await generativeModel.generateContent(combinePrompt(request));
+    const response = await withProviderRetry(() =>
+      generativeModel.generateContent(combinePrompt(request)),
+    );
 
     const usageMetadata = response.response.usageMetadata;
     const usage = makeUsage({
