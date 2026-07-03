@@ -34,6 +34,7 @@ import {
   type GenericAgentToolKey,
 } from "@/lib/tools/definitions";
 import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
+import { readWebPage, searchWeb } from "@/lib/tools/web-search";
 
 const MAX_TOOL_ITERATIONS = 12;
 const MAX_TOOL_CALLS_PER_ITERATION = 5;
@@ -4439,6 +4440,19 @@ function schemaForTool(tool: GenericAgentToolKey) {
         entryFile: "optional uploaded .py filename to execute",
         args: "optional string[]",
       };
+    case "web.search":
+      return {
+        query: "public web search query",
+        maxResults: "optional number from 1 to 10",
+        includeRawContent:
+          "optional boolean; true when snippets are not enough and short raw markdown content is useful",
+      };
+    case "web.readPage":
+      return {
+        url: "public http(s) URL to extract",
+        query:
+          "optional focus question to extract the most relevant chunks from a longer page",
+      };
     case "google.drive.copyFile":
       return {
         fileUrl: "Google Drive/Docs/Sheets/Slides URL, optional when a template/reference is attached",
@@ -4585,6 +4599,8 @@ function buildPlannerPrompt(input: {
     "Use only the available tools listed below.",
     "Allowed without approval: reading data, running helper code in the sandbox, creating new files, copying templates, editing files created/copied in this same run, and creating Notion memory pages.",
     "Do not request destructive actions. Do not edit existing client/team files unless they were created or copied by this run.",
+    "Use web.search for current public internet context when internal Notion/Drive memory is insufficient, and cite web source titles and URLs. Use web.readPage to inspect a specific public URL returned by search or provided in the prompt.",
+    "Web tools are read-only. Do not use them to submit forms, log in, purchase, send messages, scrape private content, or mutate any external website.",
     "For Google Slides template work, first copy the template deck, then update the copied deck.",
     "For Google Docs template work, first copy or create the document, then replace placeholders or batch update only the copied/run-owned Doc.",
     "When creating a new Google Doc report/brief, pass the complete markdown body in google.docs.createDocument.content so the platform can insert and verify formatted content immediately. Do not create an empty Doc and stop.",
@@ -5083,6 +5099,21 @@ async function executeOneTool(input: {
         durationMs: sandbox.durationMs,
         files: generatedArtifacts,
       };
+    }
+
+    if (toolName === "web.search") {
+      result = await searchWeb({
+        query: asString(request.query),
+        maxResults: asNumber(request.maxResults, 0) || undefined,
+        includeRawContent: request.includeRawContent === true,
+      });
+    }
+
+    if (toolName === "web.readPage") {
+      result = await readWebPage({
+        url: asString(request.url),
+        query: asString(request.query),
+      });
     }
 
     if (toolName === "google.drive.copyFile") {
@@ -5903,6 +5934,8 @@ export function genericToolInstruction() {
     "Generic agent tools are enabled by platform default for every agent.",
     `Supported generic tools: ${GENERIC_AGENT_TOOLS.map((tool) => tool.key).join(", ")}.`,
     "Use tools for real work instead of pretending they ran.",
+    "Use public web tools when the task needs current external context, source verification, competitor research, or a specific public URL. Cite web titles and URLs in the final answer.",
+    "Web access is read-only: never submit forms, log in, purchase, send messages, or mutate external websites.",
     "When a task asks for generated artifacts such as decks, reports, files, or memory pages, do not stop after reading context; create or update the requested run-owned outputs.",
     "For spreadsheet/table outputs, create a native run-owned Google Sheet when useful, then read back or update important ranges as needed.",
     "Create/copy/write only run-owned outputs unless approval is explicitly granted.",

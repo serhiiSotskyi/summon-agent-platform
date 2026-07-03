@@ -15,6 +15,7 @@ Internal Summon platform for creating workspace agents that can search Notion an
 - Clerk sign-in, personal workspaces, shared workspaces, roles, and invite links.
 - Agent creation with provider/model selection, manual or scheduled triggers, connector selection, file uploads, and reference links.
 - Default Summon memory through Notion and Google Drive.
+- Read-only public web search and web page extraction when configured.
 - Python sandbox runs for uploaded or generated helper code.
 - Run-owned Google Drive, Docs, Sheets, and Slides outputs.
 - Tool-call logs, generated artifacts, run output, token usage, and estimated LLM cost.
@@ -76,6 +77,10 @@ Optional:
 ```env
 ANTHROPIC_API_KEY=
 GOOGLE_GENERATIVE_AI_API_KEY=
+WEB_SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=
+WEB_SEARCH_MAX_RESULTS=5
+WEB_READ_MAX_CHARS=12000
 GOOGLE_ADS_DEVELOPER_TOKEN=
 GOOGLE_ADS_CUSTOMER_ID=
 GOOGLE_ADS_LOGIN_CUSTOMER_ID=

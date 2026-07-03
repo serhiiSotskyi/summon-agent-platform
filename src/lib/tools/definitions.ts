@@ -9,6 +9,20 @@ const GENERIC_AGENT_TOOL_BASE = [
     category: "Sandbox",
   },
   {
+    key: "web.search",
+    name: "Search public web",
+    summary:
+      "Search the public web for current external context and return citation-ready source results.",
+    category: "Web",
+  },
+  {
+    key: "web.readPage",
+    name: "Read public web page",
+    summary:
+      "Extract readable text from a public web page URL for evidence, research, and citations.",
+    category: "Web",
+  },
+  {
     key: "google.drive.copyFile",
     name: "Copy Drive file",
     summary:
@@ -192,6 +206,15 @@ const googleReviewPolicy = {
   timeoutMs: 45_000,
 } satisfies ToolPolicy;
 
+const webReadPolicy = {
+  approvalPolicy:
+    "No approval required for public web searches and public page reads. Do not submit forms, log in, purchase, send, or mutate external websites.",
+  authRequirement: "TAVILY_API_KEY configured in the runtime environment.",
+  retryPolicy: "No in-run retry. The worker job can retry failed runs.",
+  riskLevel: "read",
+  timeoutMs: 45_000,
+} satisfies ToolPolicy;
+
 const notionWritePolicy = {
   approvalPolicy:
     "No approval required for creating a new memory page with run output, evidence, links, and caveats.",
@@ -203,6 +226,8 @@ const notionWritePolicy = {
 
 const TOOL_POLICIES = {
   "python.run": sandboxPolicy,
+  "web.search": webReadPolicy,
+  "web.readPage": webReadPolicy,
   "google.drive.copyFile": googleRunOwnedWritePolicy,
   "google.drive.createTextFile": googleRunOwnedWritePolicy,
   "google.drive.uploadArtifact": googleRunOwnedWritePolicy,

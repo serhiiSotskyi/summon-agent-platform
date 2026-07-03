@@ -166,6 +166,41 @@ function llmReadiness(): ReadinessItem {
   };
 }
 
+function webSearchReadiness(): ReadinessItem {
+  const provider = (getEnv("WEB_SEARCH_PROVIDER") ?? "tavily").toLowerCase();
+  if (provider !== "tavily") {
+    return {
+      action: "Set WEB_SEARCH_PROVIDER=tavily or add support for the configured provider.",
+      detail: `Unsupported web search provider configured: ${provider}.`,
+      key: "web-search",
+      status: "BLOCKED",
+      title: "Public web research",
+    };
+  }
+
+  if (getEnv("TAVILY_API_KEY")) {
+    return {
+      detail:
+        "Tavily is configured for read-only public web search and page extraction.",
+      href: "https://app.tavily.com",
+      key: "web-search",
+      status: "READY",
+      title: "Public web research",
+    };
+  }
+
+  return {
+    action:
+      "Add TAVILY_API_KEY to Vercel and Railway to let agents search and read public web pages.",
+    detail:
+      "Agents can still use Notion, Drive, uploaded files, and connected workspace data, but public web research will fail with a clear missing-key message.",
+    href: "https://app.tavily.com",
+    key: "web-search",
+    status: "DEGRADED",
+    title: "Public web research",
+  };
+}
+
 async function connectorReadiness(workspaceId: string): Promise<ReadinessItem[]> {
   const credentials = await getDb().connectorCredential.findMany({
     where: { workspaceId },
@@ -258,6 +293,7 @@ export async function getWorkspaceReadiness(
 ): Promise<WorkspaceReadiness> {
   const items = [
     llmReadiness(),
+    webSearchReadiness(),
     ...(await connectorReadiness(workspaceId)),
     await resendReadiness(workspaceId),
   ];
