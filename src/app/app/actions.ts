@@ -507,6 +507,37 @@ export async function pauseAgent(formData: FormData) {
   redirect(`/app/agents/${updatedAgent.id}?workspace=${context.workspace.id}`);
 }
 
+export async function deleteAgent(formData: FormData) {
+  const agentId = getText(formData, "agentId");
+  const workspaceId = getText(formData, "workspaceId");
+  const context = await requireContext(workspaceId);
+
+  if (!canCreateAgent(context.role)) {
+    throw new Error("You do not have permission to delete agents.");
+  }
+
+  const agent = await getDb().agent.findFirst({
+    where: {
+      id: agentId,
+      workspaceId: context.workspace.id,
+      status: { not: "DELETED" },
+    },
+  });
+
+  if (!agent) {
+    throw new Error("Agent not found.");
+  }
+
+  await removeAgentScheduler(agent.id);
+  await getDb().agent.update({
+    where: { id: agent.id },
+    data: { status: "DELETED" },
+  });
+
+  revalidatePath("/app", "layout");
+  redirect(`/app/agents?workspace=${context.workspace.id}`);
+}
+
 export async function updateAgentConfig(formData: FormData) {
   const agentId = getText(formData, "agentId");
   const workspaceId = getText(formData, "workspaceId");

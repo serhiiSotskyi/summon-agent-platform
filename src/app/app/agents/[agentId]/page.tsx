@@ -36,6 +36,7 @@ import {
   activateAgent,
   addAgentFile,
   createManualRun,
+  deleteAgent,
   pauseAgent,
   removeAgentFile,
 } from "../../actions";
@@ -154,6 +155,24 @@ export default async function AgentDetailPage({
                 <PendingSubmitButton pendingLabel="Starting run..." type="submit">
                   <Play aria-hidden />
                   Run test
+                </PendingSubmitButton>
+              </form>
+            ) : null}
+            {canEdit ? (
+              <form action={deleteAgent}>
+                <input name="agentId" type="hidden" value={agent.id} />
+                <input
+                  name="workspaceId"
+                  type="hidden"
+                  value={context.workspace.id}
+                />
+                <PendingSubmitButton
+                  pendingLabel="Deleting..."
+                  type="submit"
+                  variant="destructive"
+                >
+                  <Trash2 aria-hidden />
+                  Delete
                 </PendingSubmitButton>
               </form>
             ) : null}
