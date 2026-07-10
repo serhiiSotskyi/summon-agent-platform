@@ -102,6 +102,12 @@ Add the remote MCP server URL as a Claude custom web connector:
 https://summon-agent-platform.vercel.app/api/mcp
 ```
 
+Primary Owner handoff page:
+
+```text
+https://summon-agent-platform.vercel.app/claude-connector-setup.html
+```
+
 For Claude Team or Enterprise, an Owner or Primary Owner adds the connector in
 organization connector settings. Each member then connects it from their own
 Claude account and authorizes with their Summon account, so MCP tool calls use

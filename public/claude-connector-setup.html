@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Summon Claude Connector Setup</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0d0f0f;
+        --panel: #161a1a;
+        --muted: #a1a1aa;
+        --text: #f4f4f5;
+        --line: rgba(255, 255, 255, 0.12);
+        --accent: #34d399;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      main {
+        width: min(920px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 48px 0 64px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        line-height: 1;
+      }
+
+      h2 {
+        margin: 0 0 14px;
+        font-size: 1.2rem;
+      }
+
+      p {
+        color: var(--muted);
+        line-height: 1.65;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      section {
+        border-top: 1px solid var(--line);
+        padding: 28px 0;
+      }
+
+      code,
+      pre {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: #d9f99d;
+      }
+
+      code {
+        padding: 2px 6px;
+      }
+
+      pre {
+        overflow-x: auto;
+        padding: 16px;
+        white-space: pre-wrap;
+      }
+
+      ol,
+      ul {
+        padding-left: 1.35rem;
+      }
+
+      li {
+        margin: 10px 0;
+        color: #d4d4d8;
+        line-height: 1.55;
+      }
+
+      .summary {
+        margin: 18px 0 32px;
+        max-width: 760px;
+        font-size: 1.05rem;
+      }
+
+      .label {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        margin-bottom: 16px;
+        border: 1px solid rgba(52, 211, 153, 0.35);
+        border-radius: 999px;
+        padding: 0 10px;
+        color: var(--accent);
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .grid {
+        display: grid;
+        gap: 18px;
+      }
+
+      @media (min-width: 760px) {
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      .block {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        padding: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="label">Claude Organization Connector</span>
+      <h1>Summon setup for Claude and Cowork</h1>
+      <p class="summary">
+        This page is for the Claude Primary Owner or Owner who will add Summon
+        as an organization custom connector. The connector is already deployed.
+        Each team member authorizes with their own Summon account, so Claude
+        uses that member's workspace access and role permissions.
+      </p>
+
+      <section>
+        <h2>Connector URL</h2>
+        <pre>https://summon-agent-platform.vercel.app/api/mcp</pre>
+        <p>
+          Leave advanced OAuth client fields blank unless Claude explicitly
+          requires them. Summon supports OAuth discovery and dynamic client
+          registration.
+        </p>
+      </section>
+
+      <section>
+        <h2>Admin setup</h2>
+        <ol>
+          <li>Open Claude as an Owner or Primary Owner.</li>
+          <li>Go to Organization settings, then Connectors.</li>
+          <li>Add a custom connector. Choose the Web or remote MCP option.</li>
+          <li>Name it Summon.</li>
+          <li>Paste the connector URL above.</li>
+          <li>Save the connector for the organization.</li>
+        </ol>
+        <p>
+          If the custom connector option is not visible, check that the user is
+          an Owner or Primary Owner and that custom connectors are enabled for
+          the Claude organization.
+        </p>
+      </section>
+
+      <section>
+        <h2>Member connection</h2>
+        <ol>
+          <li>Open Claude or Cowork.</li>
+          <li>Open Customize, then Connectors.</li>
+          <li>Find Summon and select Connect.</li>
+          <li>Sign into Summon with the member's own account.</li>
+          <li>Authorize Claude to use Summon.</li>
+        </ol>
+      </section>
+
+      <section>
+        <h2>Smoke tests</h2>
+        <div class="grid">
+          <div class="block">
+            <h2>Read-only test</h2>
+            <pre>Use Summon to check connector health.</pre>
+          </div>
+          <div class="block">
+            <h2>Workspace test</h2>
+            <pre>Use Summon to show my context and default workspace.</pre>
+          </div>
+          <div class="block">
+            <h2>Agent list test</h2>
+            <pre>Use Summon to list my agents.</pre>
+          </div>
+          <div class="block">
+            <h2>Controlled write test</h2>
+            <pre>Use Summon to create a test agent named "Claude Connector Smoke Test" in my default workspace. Keep it inactive or paused.</pre>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Expected behavior</h2>
+        <ul>
+          <li>Claude should ask the member to authorize Summon before tool use.</li>
+          <li>Tool calls should use the authorized member's Summon account.</li>
+          <li>The default workspace should come from that member's Summon memberships.</li>
+          <li>Members can only perform actions allowed by their Summon role.</li>
+          <li>Risky external changes remain approval-gated by Summon.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Support note</h2>
+        <p>
+          If setup fails, capture the exact Claude screen and error message.
+          The most useful checks are whether the user is an Owner or Primary
+          Owner, whether custom connectors are enabled, and whether Claude is
+          using the connector URL exactly as shown above.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
