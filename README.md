@@ -14,6 +14,7 @@ Internal Summon platform for creating workspace agents that can search Notion an
 
 - Clerk sign-in, personal workspaces, shared workspaces, roles, and invite links.
 - Agent creation with provider/model selection, manual or scheduled triggers, connector selection, file uploads, and reference links.
+- Claude-first remote MCP connector at `/api/mcp`, with OAuth authorization per Summon user.
 - Default Summon memory through Notion and Google Drive.
 - Read-only public web search and web page extraction when configured.
 - Python sandbox runs for uploaded or generated helper code.
@@ -88,7 +89,23 @@ GOOGLE_ADS_API_VERSION=
 GA4_PROPERTY_ID=
 NOTION_TOKEN=
 NOTION_PARENT_PAGE_ID=
+SUMMON_MCP_OAUTH_SECRET=
+SUMMON_MCP_ACCESS_TOKEN_TTL_SECONDS=28800
+SUMMON_MCP_REFRESH_TOKEN_TTL_SECONDS=2592000
 ```
+
+## Claude Connector
+
+Add the remote MCP server URL as a Claude custom web connector:
+
+```text
+https://summon-agent-platform.vercel.app/api/mcp
+```
+
+For Claude Team or Enterprise, an Owner or Primary Owner adds the connector in
+organization connector settings. Each member then connects it from their own
+Claude account and authorizes with their Summon account, so MCP tool calls use
+that member's Summon workspace memberships and role permissions.
 
 ## Verification Commands
 

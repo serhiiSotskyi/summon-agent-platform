@@ -77,7 +77,7 @@ function testPricing() {
       model: "gpt-4.1",
       usage,
       estimatedCostUsd: 0.006,
-      pricingVersion: "2026-06-08",
+      pricingVersion: "2026-06-23",
     },
   );
 
