@@ -59,9 +59,8 @@ function isAllowedRedirectUri(value: string) {
     }
 
     return (
-      process.env.NODE_ENV !== "production" &&
       url.protocol === "http:" &&
-      ["localhost", "127.0.0.1"].includes(url.hostname)
+      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
     );
   } catch {
     return false;

@@ -12,9 +12,8 @@ function isAllowedRedirectUri(value: string) {
     }
 
     return (
-      process.env.NODE_ENV !== "production" &&
       url.protocol === "http:" &&
-      ["localhost", "127.0.0.1"].includes(url.hostname)
+      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
     );
   } catch {
     return false;
@@ -34,7 +33,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: "invalid_redirect_uris",
-        error_description: "At least one HTTPS redirect URI is required.",
+        error_description:
+          "At least one HTTPS or loopback HTTP redirect URI is required.",
       },
       { status: 400 },
     );
