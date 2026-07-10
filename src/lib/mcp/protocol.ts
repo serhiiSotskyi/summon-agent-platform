@@ -4,7 +4,7 @@ import { callMcpTool, MCP_TOOLS } from "@/lib/mcp/tools";
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 const SERVER_INSTRUCTIONS =
-  "Use Summon to create durable team automations. Create agents as drafts first, attach references, run a manual test, inspect results, then activate schedules only when output is acceptable. Respect Summon approvals for protected actions.";
+  "Use Agent Platform to create durable team automations. Create automations as drafts first, attach references, run a manual test, inspect results, then activate schedules only when output is acceptable. Respect Agent Platform approvals for protected actions.";
 
 type JsonRpcId = number | string | null;
 
@@ -95,7 +95,7 @@ export async function handleMcpMessage({
         },
         serverInfo: {
           name: "summon-agent-platform",
-          title: "Summon Agent Platform",
+          title: "Agent Platform",
           version: "0.1.0",
         },
         instructions: SERVER_INSTRUCTIONS,

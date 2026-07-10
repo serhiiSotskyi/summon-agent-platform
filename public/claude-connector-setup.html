@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Summon Claude Connector Setup</title>
+    <title>Agent Platform Claude Plugin Setup</title>
     <style>
       :root {
         color-scheme: dark;
@@ -134,32 +134,65 @@
   </head>
   <body>
     <main>
-      <span class="label">Claude Organization Connector</span>
-      <h1>Summon setup for Claude and Cowork</h1>
+      <span class="label">Claude Organization Plugin</span>
+      <h1>Agent Platform setup for Claude and Cowork</h1>
       <p class="summary">
-        This page is for the Claude Primary Owner or Owner who will add Summon
-        as an organization custom connector. The connector is already deployed.
-        Each team member authorizes with their own Summon account, so Claude
-        uses that member's workspace access and role permissions.
+        This page is for the Claude Primary Owner or Owner who will add the
+        Agent Platform plugin for the team. The plugin lets Claude/Cowork turn
+        recurring work into shared Agent Platform automations, run tests,
+        review results, and manage approvals. Each team member authorizes with
+        their own Agent Platform account, so Claude uses that member's workspace
+        access and role permissions.
       </p>
 
       <section>
-        <h2>Connector URL</h2>
-        <pre>https://summon-agent-platform.vercel.app/api/mcp</pre>
+        <h2>Recommended setup</h2>
+        <ol>
+          <li>Open Claude as an Owner or Primary Owner.</li>
+          <li>Go to Organization settings, then Plugins.</li>
+          <li>Add plugins and choose Upload a file.</li>
+          <li>Upload the Agent Platform plugin ZIP.</li>
+          <li>Set the plugin to Installed by default or Available for install.</li>
+          <li>Ask one team member to connect and run the smoke tests below.</li>
+        </ol>
+        <pre>https://summon-agent-platform.vercel.app/agent-platform-claude-plugin.zip</pre>
         <p>
-          Leave advanced OAuth client fields blank unless Claude explicitly
-          requires them. Summon supports OAuth discovery and dynamic client
-          registration.
+          Manual upload is the quickest Monday test. For ongoing updates, use
+          Claude's GitHub-synced plugin marketplace with the repository that
+          contains <code>.claude-plugin/marketplace.json</code>.
         </p>
       </section>
 
       <section>
-        <h2>Admin setup</h2>
+        <h2>What the plugin does</h2>
+        <ul>
+          <li>Exposes an Agent Platform plugin inside Claude/Cowork.</li>
+          <li>Provides workflows such as <code>/automate-task</code>, <code>/review-automation-results</code>, and <code>/improve-automation</code>.</li>
+          <li>Teaches Claude to ask only the missing setup questions.</li>
+          <li>Creates shared draft automations from recurring-task briefs.</li>
+          <li>Runs manual tests before schedule activation.</li>
+          <li>Returns links to automations, run results, artifacts, and approvals.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Connector engine</h2>
+        <pre>https://summon-agent-platform.vercel.app/api/mcp</pre>
+        <p>
+          This remote MCP connector is bundled in the plugin. Add it manually
+          only if plugin upload is blocked in Claude admin settings. Leave
+          advanced OAuth client fields blank unless Claude explicitly requires
+          them.
+        </p>
+      </section>
+
+      <section>
+        <h2>Fallback connector setup</h2>
         <ol>
           <li>Open Claude as an Owner or Primary Owner.</li>
           <li>Go to Organization settings, then Connectors.</li>
           <li>Add a custom connector. Choose the Web or remote MCP option.</li>
-          <li>Name it Summon.</li>
+          <li>Name it Agent Platform.</li>
           <li>Paste the connector URL above.</li>
           <li>Save the connector for the organization.</li>
         </ol>
@@ -174,10 +207,10 @@
         <h2>Member connection</h2>
         <ol>
           <li>Open Claude or Cowork.</li>
-          <li>Open Customize, then Connectors.</li>
-          <li>Find Summon and select Connect.</li>
-          <li>Sign into Summon with the member's own account.</li>
-          <li>Authorize Claude to use Summon.</li>
+          <li>Open Customize, then Plugins.</li>
+          <li>Install or enable Agent Platform if it is not installed automatically.</li>
+          <li>When Claude asks to connect Agent Platform, sign in with the member's own account.</li>
+          <li>Authorize Claude to use Agent Platform.</li>
         </ol>
       </section>
 
@@ -185,20 +218,20 @@
         <h2>Smoke tests</h2>
         <div class="grid">
           <div class="block">
-            <h2>Read-only test</h2>
-            <pre>Use Summon to check connector health.</pre>
+            <h2>Automation setup test</h2>
+            <pre>/automate-task Create a daily automation that checks our shared reporting notes and tells the team what needs attention. Ask me what details you need before setting it up.</pre>
           </div>
           <div class="block">
-            <h2>Workspace test</h2>
-            <pre>Use Summon to show my context and default workspace.</pre>
+            <h2>Context test</h2>
+            <pre>Use Agent Platform to show my context and default workspace.</pre>
           </div>
           <div class="block">
             <h2>Agent list test</h2>
-            <pre>Use Summon to list my agents.</pre>
+            <pre>Use Agent Platform to list my automations.</pre>
           </div>
           <div class="block">
-            <h2>Controlled write test</h2>
-            <pre>Use Summon to create a test agent named "Claude Connector Smoke Test" in my default workspace. Keep it inactive or paused.</pre>
+            <h2>Results review test</h2>
+            <pre>/review-automation-results Show me recent Agent Platform automation results and anything that needs approval.</pre>
           </div>
         </div>
       </section>
@@ -206,11 +239,12 @@
       <section>
         <h2>Expected behavior</h2>
         <ul>
-          <li>Claude should ask the member to authorize Summon before tool use.</li>
-          <li>Tool calls should use the authorized member's Summon account.</li>
-          <li>The default workspace should come from that member's Summon memberships.</li>
-          <li>Members can only perform actions allowed by their Summon role.</li>
-          <li>Risky external changes remain approval-gated by Summon.</li>
+          <li>Claude should ask the member to authorize Agent Platform before tool use.</li>
+          <li>Tool calls should use the authorized member's Agent Platform account.</li>
+          <li>The default workspace should come from that member's Agent Platform memberships.</li>
+          <li>Members can only perform actions allowed by their workspace role.</li>
+          <li>Risky external changes remain approval-gated by Agent Platform.</li>
+          <li>New recurring tasks should be created as draft automations, tested, then activated only after review.</li>
         </ul>
       </section>
 
@@ -219,8 +253,8 @@
         <p>
           If setup fails, capture the exact Claude screen and error message.
           The most useful checks are whether the user is an Owner or Primary
-          Owner, whether custom connectors are enabled, and whether Claude is
-          using the connector URL exactly as shown above.
+          Owner, whether Plugins/Cowork/Skills are enabled for the Claude
+          organization, and whether Claude can reach the public connector URL.
         </p>
       </section>
     </main>

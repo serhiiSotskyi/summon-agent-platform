@@ -16,7 +16,7 @@ import { canCreateAgent, canManageWorkspace } from "@/lib/app/permissions";
 import { getWorkspaceReadiness } from "@/lib/app/readiness";
 import { connectorCatalog } from "@/lib/connectors/catalog";
 import { getDb } from "@/lib/db";
-import { getDefaultLlmSettings, llmProviderSchema } from "@/lib/env";
+import { getDefaultLlmSettings, getEnv, llmProviderSchema } from "@/lib/env";
 import type { McpUserContext } from "@/lib/mcp/context";
 import { enqueueApprovedAction } from "@/lib/queue/agent-runs";
 import {
@@ -72,6 +72,23 @@ const actionPermissionModeSchema = z
 const deliveryPermissionModeSchema = z
   .enum(["ASK_BEFORE_SENDING", "SEND_AUTOMATICALLY"])
   .optional();
+const agentReferenceRoleSchema = z.enum([
+  "input_data",
+  "helper_code",
+  "template",
+  "reference",
+  "output_destination",
+  "other",
+]);
+const agentReferenceSchema = z.object({
+  content_text: z.string().optional(),
+  description: z.string().optional(),
+  mime_type: z.string().optional(),
+  name: z.string().min(1),
+  role: agentReferenceRoleSchema.default("reference"),
+  source_type: z.enum(["external_url", "uploaded_text"]).default("external_url"),
+  url: z.string().optional(),
+});
 
 function schema(properties: Record<string, unknown>, required: string[] = []) {
   return {
@@ -238,6 +255,120 @@ export const MCP_TOOLS = [
         workspace_id: workspaceJsonProperty,
       },
       ["name"],
+    ),
+    annotations: {
+      readOnlyHint: false,
+      openWorldHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
+  }),
+  defineTool({
+    name: "summon_create_automation_from_brief",
+    title: "Create Agent Platform automation from brief",
+    description:
+      "Turn a non-technical user's recurring task brief into a shared Agent Platform automation. Use after asking any missing questions about cadence, owner/workspace, sources, output, recipients, and approval rules. Creates a draft by default, can attach references, and can queue a test run.",
+    inputSchema: schema(
+      {
+        action_permission_mode: {
+          type: "string",
+          enum: ["ASK_BEFORE_CHANGES", "FULL_ACCESS"],
+          default: "ASK_BEFORE_CHANGES",
+          description:
+            "Use ASK_BEFORE_CHANGES unless the user explicitly grants full access.",
+        },
+        audience: {
+          type: "string",
+          description:
+            "Who should use or review this automation, such as the whole team, client team, or named stakeholders.",
+        },
+        delivery_permission_mode: {
+          type: "string",
+          enum: ["ASK_BEFORE_SENDING", "SEND_AUTOMATICALLY"],
+          default: "ASK_BEFORE_SENDING",
+          description:
+            "Use ASK_BEFORE_SENDING unless the user explicitly allows automatic delivery.",
+        },
+        desired_outcome: {
+          type: "string",
+          description:
+            "The concrete result the recurring automation should produce each run.",
+        },
+        name: {
+          type: "string",
+          description:
+            "Clear team-facing automation name. If omitted, Agent Platform derives one from the brief.",
+        },
+        references: {
+          type: "array",
+          description:
+            "URLs or inline text references Claude collected while turning the task into an automation.",
+          items: {
+            type: "object",
+            properties: {
+              content_text: { type: "string" },
+              description: { type: "string" },
+              mime_type: { type: "string" },
+              name: { type: "string" },
+              role: {
+                type: "string",
+                enum: [
+                  "input_data",
+                  "helper_code",
+                  "template",
+                  "reference",
+                  "output_destination",
+                  "other",
+                ],
+              },
+              source_type: {
+                type: "string",
+                enum: ["external_url", "uploaded_text"],
+              },
+              url: { type: "string" },
+            },
+            required: ["name"],
+            additionalProperties: false,
+          },
+        },
+        run_test: {
+          type: "boolean",
+          default: false,
+          description:
+            "Queue a manual test run after creating the automation. Prefer true after the user confirms enough detail.",
+        },
+        schedule: scheduleJsonProperty,
+        sharing_notes: {
+          type: "string",
+          description:
+            "How the team should find, review, and use results from this automation.",
+        },
+        status: {
+          type: "string",
+          enum: ["DRAFT", "ACTIVE", "PAUSED"],
+          default: "DRAFT",
+          description:
+            "Keep DRAFT until the test result is reviewed. Use ACTIVE only when the user explicitly asks to activate the schedule.",
+        },
+        success_criteria: {
+          type: "string",
+          description:
+            "What a good run result looks like and how the team should evaluate it.",
+        },
+        task_brief: {
+          type: "string",
+          description:
+            "The recurring task in the user's own words, including what they normally ask Claude to do.",
+        },
+        tools: toolKeysProperty,
+        trigger_type: {
+          type: "string",
+          enum: ["MANUAL", "SCHEDULED"],
+          default: "MANUAL",
+        },
+        workspace_id: workspaceJsonProperty,
+      },
+      ["task_brief"],
     ),
     annotations: {
       readOnlyHint: false,
@@ -531,6 +662,72 @@ function agentPromptFromObjective(prompt: string) {
     "",
     `User objective: ${prompt}`,
   ].join("\n");
+}
+
+function appUrl(path: string) {
+  const base =
+    getEnv("APP_URL") ??
+    getEnv("NEXT_PUBLIC_APP_URL") ??
+    "https://summon-agent-platform.vercel.app";
+  const normalizedBase = base.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+function deriveAutomationName(taskBrief: string) {
+  const firstLine = taskBrief
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/[.!?]/)[0]
+    ?.trim();
+  const candidate = firstLine || "Recurring team automation";
+
+  return candidate.length > 80 ? `${candidate.slice(0, 77).trimEnd()}...` : candidate;
+}
+
+function automationPromptFromBrief(input: {
+  audience?: string;
+  desiredOutcome?: string;
+  sharingNotes?: string;
+  successCriteria?: string;
+  taskBrief: string;
+}) {
+  const lines = [
+    "You are an Agent Platform automation for a shared team workspace.",
+    "Your job is to perform a recurring workflow that the user previously handled manually with Claude.",
+    "Produce results that teammates can inspect in Agent Platform run history. Be explicit about evidence, blockers, and next actions.",
+    "If required source material, credentials, or permissions are missing, report the blocker clearly instead of guessing.",
+    "Do not mutate existing external systems, budgets, campaigns, source documents, or send outbound messages unless the platform grants permission or an approval has been granted.",
+    SUMMON_MEMORY_SYSTEM_INSTRUCTION,
+    "",
+    "Recurring task brief:",
+    input.taskBrief,
+  ];
+
+  if (input.desiredOutcome) {
+    lines.push("", "Desired outcome:", input.desiredOutcome);
+  }
+  if (input.successCriteria) {
+    lines.push("", "Success criteria:", input.successCriteria);
+  }
+  if (input.audience) {
+    lines.push("", "Audience / reviewers:", input.audience);
+  }
+  if (input.sharingNotes) {
+    lines.push("", "Sharing and review notes:", input.sharingNotes);
+  }
+
+  lines.push(
+    "",
+    "Every run should finish with:",
+    "- a concise team-readable summary",
+    "- evidence and citations when source records are available",
+    "- generated artifact or destination links when files are created",
+    "- blockers and approval needs when the automation cannot safely complete",
+  );
+
+  return lines.join("\n");
 }
 
 function requireCanCreate(context: McpUserContext) {
@@ -1015,6 +1212,156 @@ const TOOL_HANDLERS = {
     return textResult({
       agent: summarizeAgent(updatedAgent),
       appUrl: `/app/agents/${updatedAgent.id}?workspace=${selected.workspace.id}`,
+      workspace: selected.workspace,
+    });
+  },
+
+  async summon_create_automation_from_brief(args: unknown, context: McpUserContext) {
+    const input = parseToolInput(
+      z.object({
+        ...workspaceIdSchema,
+        action_permission_mode: actionPermissionModeSchema,
+        audience: z.string().optional(),
+        delivery_permission_mode: deliveryPermissionModeSchema,
+        desired_outcome: z.string().optional(),
+        name: z.string().optional(),
+        references: z.array(agentReferenceSchema).default([]),
+        run_test: z.boolean().default(false),
+        schedule: scheduleSchema,
+        sharing_notes: z.string().optional(),
+        status: z.enum(["DRAFT", "ACTIVE", "PAUSED"]).default("DRAFT"),
+        success_criteria: z.string().optional(),
+        task_brief: z.string().min(1),
+        tools: z.array(z.string()).optional(),
+        trigger_type: z.enum(["MANUAL", "SCHEDULED"]).optional(),
+      }),
+      args,
+    );
+    const selected = await contextForArgs(context, input.workspace_id);
+    requireCanCreate(selected);
+
+    for (const reference of input.references) {
+      if (reference.source_type === "external_url" && !reference.url) {
+        throw new Error(`Reference "${reference.name}" needs a url when source_type is external_url.`);
+      }
+      if (reference.source_type === "uploaded_text" && !reference.content_text) {
+        throw new Error(
+          `Reference "${reference.name}" needs content_text when source_type is uploaded_text.`,
+        );
+      }
+    }
+
+    const defaults = getDefaultLlmSettings();
+    const name = input.name?.trim() || deriveAutomationName(input.task_brief);
+    const trigger = buildTriggerConfig({
+      schedule: input.schedule,
+      triggerType: input.trigger_type,
+    });
+    const requestedStatus = input.status;
+    const activateScheduled =
+      requestedStatus === "ACTIVE" && trigger.triggerType === "SCHEDULED";
+    const systemPrompt = automationPromptFromBrief({
+      audience: input.audience,
+      desiredOutcome: input.desired_outcome,
+      sharingNotes: input.sharing_notes,
+      successCriteria: input.success_criteria,
+      taskBrief: input.task_brief,
+    });
+
+    const agent = await getDb().agent.create({
+      data: {
+        actionPermissionMode: input.action_permission_mode ?? "ASK_BEFORE_CHANGES",
+        createdById: selected.user.id,
+        deliveryPermissionMode: input.delivery_permission_mode ?? "ASK_BEFORE_SENDING",
+        description:
+          input.desired_outcome ??
+          "Team automation created from a Claude/Cowork recurring-task brief.",
+        llmModel: defaults.model,
+        llmProvider: defaults.provider,
+        name,
+        status: activateScheduled ? "DRAFT" : requestedStatus,
+        systemPrompt,
+        tools: normalizeAgentToolSelection(input.tools ?? []) as Prisma.InputJsonArray,
+        triggerConfig: trigger.triggerConfig,
+        triggerType: trigger.triggerType,
+        workspaceId: selected.workspace.id,
+      },
+    });
+
+    let updatedAgent = agent;
+    if (trigger.triggerType === "SCHEDULED") {
+      const schedule = withAgentSchedulerId(
+        readScheduleConfig(trigger.triggerConfig) ??
+          buildScheduleConfig({ agentId: agent.id, frequency: "DAILY" }),
+        agent.id,
+      );
+      updatedAgent = await getDb().agent.update({
+        where: { id: agent.id },
+        data: {
+          triggerConfig: schedule as unknown as Prisma.InputJsonObject,
+        },
+      });
+
+      if (requestedStatus === "ACTIVE") {
+        await registerAgentScheduler({ ...updatedAgent, status: "ACTIVE" });
+        updatedAgent = await getDb().agent.update({
+          where: { id: agent.id },
+          data: { status: "ACTIVE" },
+        });
+      }
+    }
+
+    const files = [];
+    for (const reference of input.references) {
+      files.push(
+        await createAgentFile({
+          agentId: updatedAgent.id,
+          contentText: reference.content_text,
+          description: reference.description,
+          metadata: {
+            addedFrom: "mcp_automation_brief",
+            tokenId: context.accessTokenId,
+          },
+          mimeType:
+            reference.mime_type ??
+            (reference.source_type === "uploaded_text" ? "text/plain" : undefined),
+          name: reference.name,
+          role: reference.role,
+          sizeBytes: reference.content_text
+            ? Buffer.byteLength(reference.content_text, "utf8")
+            : undefined,
+          sourceType: reference.source_type,
+          url: reference.url,
+          workspaceId: selected.workspace.id,
+        }),
+      );
+    }
+
+    const run = input.run_test
+      ? await createManualAgentRun({
+          agentId: updatedAgent.id,
+          triggeredById: selected.user.id,
+          workspaceId: selected.workspace.id,
+        })
+      : null;
+
+    return textResult({
+      automation: summarizeAgent(updatedAgent),
+      automationUrl: appUrl(
+        `/app/agents/${updatedAgent.id}?workspace=${selected.workspace.id}`,
+      ),
+      attachedReferences: plainJson(files),
+      nextSteps: [
+        run
+          ? "Open the test run, review the result, and ask Claude to adjust the automation if anything is wrong."
+          : "Run a manual test before activating a schedule.",
+        updatedAgent.status === "ACTIVE"
+          ? "The automation is active. Scheduled runs will appear in Agent Platform run history."
+          : "Keep it as a draft until the team approves the test result, then activate it.",
+        "Team members with workspace access can see the automation, runs, artifacts, and approvals in Agent Platform.",
+      ],
+      run: run ? plainJson(run) : null,
+      runUrl: run ? appUrl(`/app/runs/${run.id}?workspace=${selected.workspace.id}`) : null,
       workspace: selected.workspace,
     });
   },

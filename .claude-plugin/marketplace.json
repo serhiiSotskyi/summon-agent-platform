@@ -1,0 +1,14 @@
+{
+  "name": "summon-agent-platform",
+  "owner": {
+    "name": "Summon"
+  },
+  "plugins": [
+    {
+      "name": "agent-platform",
+      "displayName": "Agent Platform",
+      "source": "./claude-plugins/agent-platform",
+      "description": "Turn recurring team work into shared Agent Platform automations from Claude/Cowork. Create automations, run tests, review results, and manage approvals through the Agent Platform connector."
+    }
+  ]
+}

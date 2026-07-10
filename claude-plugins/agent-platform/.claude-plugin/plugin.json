@@ -1,0 +1,17 @@
+{
+  "name": "agent-platform",
+  "displayName": "Agent Platform",
+  "version": "0.1.0",
+  "description": "Turn recurring team work into shared Agent Platform automations from Claude/Cowork. Create automations, run tests, review results, and manage approvals.",
+  "author": {
+    "name": "Summon"
+  },
+  "homepage": "https://summon-agent-platform.vercel.app/claude-connector-setup.html",
+  "keywords": [
+    "automation",
+    "agents",
+    "operations",
+    "cowork",
+    "mcp"
+  ]
+}

@@ -94,13 +94,11 @@ SUMMON_MCP_ACCESS_TOKEN_TTL_SECONDS=28800
 SUMMON_MCP_REFRESH_TOKEN_TTL_SECONDS=2592000
 ```
 
-## Claude Connector
+## Claude / Cowork Agent Platform Plugin
 
-Add the remote MCP server URL as a Claude custom web connector:
-
-```text
-https://summon-agent-platform.vercel.app/api/mcp
-```
+Recommended team rollout is the Agent Platform Claude/Cowork plugin. It bundles
+the remote MCP connector with workflows for turning recurring team work into
+shared automations, running tests, reviewing results, and managing approvals.
 
 Primary Owner handoff page:
 
@@ -108,10 +106,26 @@ Primary Owner handoff page:
 https://summon-agent-platform.vercel.app/claude-connector-setup.html
 ```
 
-For Claude Team or Enterprise, an Owner or Primary Owner adds the connector in
-organization connector settings. Each member then connects it from their own
-Claude account and authorizes with their Summon account, so MCP tool calls use
-that member's Summon workspace memberships and role permissions.
+Manual upload ZIP:
+
+```text
+https://summon-agent-platform.vercel.app/agent-platform-claude-plugin.zip
+```
+
+GitHub-synced marketplace metadata is available at `.claude-plugin/marketplace.json`.
+For Claude Team or Enterprise, an Owner or Primary Owner adds the plugin in
+organization plugin settings. Each member then connects from their own Claude
+account and authorizes with their Agent Platform account, so MCP tool calls use
+that member's workspace memberships and role permissions.
+
+The connector engine bundled by the plugin is:
+
+```text
+https://summon-agent-platform.vercel.app/api/mcp
+```
+
+Use the raw connector directly only as a fallback if Claude plugin upload or
+plugin marketplace sync is blocked in the organization admin UI.
 
 ## Verification Commands
 
