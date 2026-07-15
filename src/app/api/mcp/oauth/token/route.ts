@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   createMcpAccessToken,
   createMcpRefreshToken,
+  mcpCorsHeaders,
   verifyMcpAuthorizationCode,
   verifyMcpRefreshToken,
   verifyPkceChallenge,
@@ -9,6 +10,13 @@ import {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+export function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: { Allow: "POST, OPTIONS", ...mcpCorsHeaders() },
+  });
+}
 
 async function parseTokenRequest(request: NextRequest) {
   const contentType = request.headers.get("content-type") ?? "";
@@ -54,7 +62,7 @@ function tokenError(error: string, description: string, status = 400) {
     },
     {
       status,
-      headers: { "Cache-Control": "no-store" },
+      headers: { "Cache-Control": "no-store", ...mcpCorsHeaders() },
     },
   );
 }
@@ -72,7 +80,7 @@ function tokenResponse(input: { scope: string; userId: string }) {
       token_type: "Bearer",
     },
     {
-      headers: { "Cache-Control": "no-store" },
+      headers: { "Cache-Control": "no-store", ...mcpCorsHeaders() },
     },
   );
 }

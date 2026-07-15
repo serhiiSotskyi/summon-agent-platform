@@ -247,7 +247,7 @@ export function buildMcpProtectedResourceMetadata(request: Request) {
   const baseUrl = getMcpBaseUrl(request);
   return {
     resource: `${baseUrl}/api/mcp`,
-    resource_name: "Summon Agent Platform",
+    resource_name: "Agent Platform",
     authorization_servers: [baseUrl],
     bearer_methods_supported: ["header"],
     scopes_supported: ["summon:read", "summon:write"],
@@ -275,13 +275,23 @@ export function unauthorizedMcpResponse(request: Request) {
   return Response.json(
     {
       error: "unauthorized",
-      error_description: "Authenticate this Claude connector with Summon.",
+      error_description: "Authenticate this Claude connector with Agent Platform.",
     },
     {
       status: 401,
       headers: {
+        ...mcpCorsHeaders(),
         "WWW-Authenticate": `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource", scope="${DEFAULT_SCOPE}"`,
       },
     },
   );
+}
+
+export function mcpCorsHeaders() {
+  return {
+    "Access-Control-Allow-Headers":
+      "authorization, content-type, mcp-protocol-version",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Origin": "*",
+  };
 }

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMcpUserContextFromRequest } from "@/lib/mcp/context";
-import { unauthorizedMcpResponse } from "@/lib/mcp/oauth";
+import { mcpCorsHeaders, unauthorizedMcpResponse } from "@/lib/mcp/oauth";
 import { handleMcpMessage, MCP_PROTOCOL_VERSION } from "@/lib/mcp/protocol";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +21,8 @@ function isAllowedOrigin(request: NextRequest) {
     return (
       parsed.hostname === "claude.ai" ||
       parsed.hostname.endsWith(".claude.ai") ||
+      parsed.hostname === "claude.com" ||
+      parsed.hostname.endsWith(".claude.com") ||
       parsed.hostname === "anthropic.com" ||
       parsed.hostname.endsWith(".anthropic.com") ||
       parsed.hostname.endsWith(".summon.co") ||
@@ -33,27 +35,25 @@ function isAllowedOrigin(request: NextRequest) {
 
 function protocolHeaders() {
   return {
-    "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
     "Cache-Control": "no-store",
+    "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+    ...mcpCorsHeaders(),
   };
 }
 
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
-    headers: {
-      Allow: "POST, GET, OPTIONS",
-      "Access-Control-Allow-Headers":
-        "authorization, content-type, mcp-protocol-version",
-      "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-      "Access-Control-Allow-Origin": "*",
-    },
+    headers: { Allow: "POST, GET, OPTIONS", ...mcpCorsHeaders() },
   });
 }
 
 export async function GET(request: NextRequest) {
   if (!isAllowedOrigin(request)) {
-    return NextResponse.json({ error: "Unsupported Origin." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Unsupported Origin." },
+      { status: 403, headers: mcpCorsHeaders() },
+    );
   }
 
   const context = await getMcpUserContextFromRequest(request);
@@ -72,7 +72,10 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   if (!isAllowedOrigin(request)) {
-    return NextResponse.json({ error: "Unsupported Origin." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Unsupported Origin." },
+      { status: 403, headers: mcpCorsHeaders() },
+    );
   }
 
   const context = await getMcpUserContextFromRequest(request);

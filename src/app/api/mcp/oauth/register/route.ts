@@ -1,8 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createMcpClient, getMcpBaseUrl } from "@/lib/mcp/oauth";
+import { createMcpClient, getMcpBaseUrl, mcpCorsHeaders } from "@/lib/mcp/oauth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+export function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: { Allow: "POST, OPTIONS", ...mcpCorsHeaders() },
+  });
+}
 
 function isAllowedRedirectUri(value: string) {
   try {
@@ -36,7 +43,7 @@ export async function POST(request: NextRequest) {
         error_description:
           "At least one HTTPS or loopback HTTP redirect URI is required.",
       },
-      { status: 400 },
+      { status: 400, headers: mcpCorsHeaders() },
     );
   }
 
@@ -62,7 +69,7 @@ export async function POST(request: NextRequest) {
     },
     {
       status: 201,
-      headers: { "Cache-Control": "no-store" },
+      headers: { "Cache-Control": "no-store", ...mcpCorsHeaders() },
     },
   );
 }
