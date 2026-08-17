@@ -2600,7 +2600,7 @@ export async function createNotionPage(input: {
     workspaceId: input.workspaceId,
     runId: `tool-${Date.now()}`,
     memoryTitle: input.title,
-    runSummary: input.content,
+    runSummary: null,
     parentPageId: input.parentPageId,
     runOutput: {
       text: input.content,
@@ -2608,7 +2608,6 @@ export async function createNotionPage(input: {
         source: "artifact",
         title: link.title,
         url: link.url,
-        snippet: input.content,
       })),
     },
   });

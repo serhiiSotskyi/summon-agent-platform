@@ -43,6 +43,7 @@ const TOOL_LLM_TIMEOUT_MS = 45_000;
 const FINAL_LLM_TIMEOUT_MS = 45_000;
 const SHEET_PROMPT_SAMPLE_ROWS = 24;
 const SHEET_PROMPT_SAMPLE_COLUMNS = 24;
+const COMPUTED_OUTPUT_PREVIEW_CHARS = 6000;
 
 type ToolLoopAgent = Pick<
   Agent,
@@ -856,6 +857,44 @@ function hasSuccessfulTool(results: unknown[], toolName: GenericAgentToolKey) {
   return successfulToolResults(results).some((result) => result.toolName === toolName);
 }
 
+function latestSuccessfulToolIndex(
+  results: unknown[],
+  predicate: (result: ToolCallOutputRecord) => boolean,
+) {
+  let latest = -1;
+  results.forEach((result, index) => {
+    if (
+      isToolCallOutputRecord(result) &&
+      result.status === "succeeded" &&
+      predicate(result)
+    ) {
+      latest = index;
+    }
+  });
+
+  return latest;
+}
+
+function latestSubstantiveToolIndex(results: unknown[]) {
+  return latestSuccessfulToolIndex(
+    results,
+    (result) => result.toolName !== "notion.createPage",
+  );
+}
+
+function hasFreshNotionPublish(results: unknown[]) {
+  const latestNotion = latestSuccessfulToolIndex(
+    results,
+    (result) => result.toolName === "notion.createPage",
+  );
+  if (latestNotion < 0) {
+    return false;
+  }
+
+  const latestSubstantive = latestSubstantiveToolIndex(results);
+  return latestSubstantive < 0 || latestNotion > latestSubstantive;
+}
+
 function hasMeaningfulSlidesWrite(results: unknown[]) {
   return successfulToolResults(results).some((result) => {
     if (result.toolName === "google.slides.batchUpdate") {
@@ -1054,10 +1093,10 @@ function missingWorkflowOutcomes(input: {
 
   if (
     input.requirements.requiresNotionPublish &&
-    !hasSuccessfulTool(input.toolResults, "notion.createPage")
+    !hasFreshNotionPublish(input.toolResults)
   ) {
     missing.push(
-      "Create the required Notion memory page with notion.createPage and include the generated artifact links.",
+      "Create the final Notion memory page after analysis is complete. Include computed findings, recommendations, caveats, and generated artifact links.",
     );
   }
 
@@ -1074,12 +1113,6 @@ function copiedPresentationId(results: unknown[]) {
   const copied = latestSuccessfulToolResult(results, "google.slides.copyTemplate");
   const result = asRecord(copied?.result);
   return asString(result.presentationId, asString(result.fileId));
-}
-
-function copiedPresentationLink(results: unknown[]) {
-  const copied = latestSuccessfulToolResult(results, "google.slides.copyTemplate");
-  const result = asRecord(copied?.result);
-  return asString(result.webViewLink);
 }
 
 function metricArtifactJson(results: unknown[]) {
@@ -4036,6 +4069,9 @@ function generatedOutputLines(results: unknown[]) {
       const name = asString(artifact.name, "Generated artifact");
       const location = asString(artifact.location);
       const type = asString(artifact.type, asString(artifact.artifactType, "artifact"));
+      if (type === "sandbox_file" && name === "main.py") {
+        continue;
+      }
       lines.push(location ? `- ${name} (${type}): ${location}` : `- ${name} (${type})`);
     }
 
@@ -4055,6 +4091,131 @@ function generatedOutputLines(results: unknown[]) {
   return Array.from(new Set(lines));
 }
 
+function generatedLinksForNotion(results: unknown[]) {
+  const links: Array<{ title: string; url: string }> = [];
+
+  for (const result of successfulToolResults(results)) {
+    for (const artifact of asObjectArray(result.artifacts)) {
+      const name = asString(artifact.name, "Generated artifact");
+      const location = asString(artifact.location);
+      const type = asString(artifact.type, asString(artifact.artifactType, "artifact"));
+      if (!/^https?:\/\//i.test(location) || (type === "sandbox_file" && name === "main.py")) {
+        continue;
+      }
+      links.push({ title: name, url: location });
+    }
+
+    const payload = asRecord(result.result);
+    const fileName = asString(payload.fileName);
+    const webViewLink = asString(payload.webViewLink);
+    if (fileName && /^https?:\/\//i.test(webViewLink)) {
+      links.push({ title: fileName, url: webViewLink });
+    }
+  }
+
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    const key = `${link.title}\n${link.url}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function parseJsonObjectFromText(value: string) {
+  try {
+    return asRecord(extractJsonObject(value));
+  } catch {
+    return {};
+  }
+}
+
+function formatPercentLike(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}%`;
+  }
+
+  return asString(value);
+}
+
+function formatGapPoints(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return asString(value);
+  }
+
+  const rounded = Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
+  return `${value > 0 ? "+" : ""}${rounded}pp`;
+}
+
+function computedFindingLine(flag: Record<string, unknown>) {
+  const risk = asString(flag.risk, "pacing issue").toLowerCase();
+  const client = asString(flag.client, "Unknown client");
+  const campaign = asString(flag.campaign);
+  const account = asString(flag.account);
+  const spend = formatPercentLike(flag.spend_pct);
+  const period = formatPercentLike(flag.period_pct);
+  const gap = formatGapPoints(flag.gap_pp);
+  const context = asString(flag.context_note) || asString(flag.context);
+  const action =
+    risk.includes("over")
+      ? "review reducing pace, tightening caps, or reallocating budget after approval"
+      : risk.includes("under")
+        ? "review increasing pace, unblocking delivery, or reallocating spare budget after approval"
+        : "review pacing and budget allocation after approval";
+  const name = [client, account, campaign].filter(Boolean).join(" / ");
+  const pacing = [spend ? `spend ${spend}` : null, period ? `period ${period}` : null, gap]
+    .filter(Boolean)
+    .join(", ");
+
+  return `- ${risk}: ${name}${pacing ? ` - ${pacing}` : ""}.${
+    context ? ` Context: ${context}.` : ""
+  } Suggested action: ${action}.`;
+}
+
+function computedOutputSections(results: unknown[]) {
+  const latestPython = successfulToolResults(results)
+    .filter((result) => result.toolName === "python.run")
+    .map((result) => asRecord(result.result))
+    .filter((result) => asString(result.stdout))
+    .at(-1);
+  const stdout = asString(latestPython?.stdout);
+  if (!stdout) {
+    return [];
+  }
+
+  const parsed = parseJsonObjectFromText(stdout);
+  const flags =
+    asObjectArray(parsed.top_flags).length > 0
+      ? asObjectArray(parsed.top_flags)
+      : asObjectArray(parsed.flags);
+  const totalFlags = asNumber(parsed.total_flags, flags.length);
+  const overspending = asNumber(parsed.overspending, 0);
+  const underspending = asNumber(parsed.underspending, 0);
+
+  if (flags.length > 0) {
+    return [
+      "## Computed findings",
+      `- Total pacing flags: ${totalFlags}`,
+      `- Overspending flags: ${overspending}`,
+      `- Underspending flags: ${underspending}`,
+      "",
+      "## Prioritized budget suggestions",
+      ...flags.slice(0, 10).map((flag) => computedFindingLine(flag)),
+      "",
+      "No campaign or budget changes were made. Treat these as recommendations requiring human approval.",
+    ];
+  }
+
+  return [
+    "## Computed output",
+    "```json",
+    compactText(stdout, COMPUTED_OUTPUT_PREVIEW_CHARS) as string,
+    "```",
+  ];
+}
+
 function deterministicSummaryMarkdown(input: {
   agentName: string;
   results: unknown[];
@@ -4072,6 +4233,10 @@ function deterministicSummaryMarkdown(input: {
     ...(generatedOutputLines(input.results).length > 0
       ? generatedOutputLines(input.results)
       : ["- No generated output links recorded."]),
+    ...(() => {
+      const computed = computedOutputSections(input.results);
+      return computed.length > 0 ? ["", ...computed] : [];
+    })(),
     ...(hasMetrics
       ? [
           "",
@@ -4296,36 +4461,24 @@ function deterministicWorkflowCalls(input: {
 
   if (
     input.requirements.requiresNotionPublish &&
-    hasMeaningfulSlidesWrite(input.toolResults) &&
-    (!input.availableTools.includes("google.slides.auditDeck") ||
-      hasPassingDeckAudit(input.toolResults)) &&
-    !hasSuccessfulTool(input.toolResults, "notion.createPage")
+    input.availableTools.includes("notion.createPage") &&
+    latestSubstantiveToolIndex(input.toolResults) >= 0 &&
+    !hasFreshNotionPublish(input.toolResults)
   ) {
-    const links = [
-      {
-        title: "Generated Google Slides deck",
-        url: copiedPresentationLink(input.toolResults),
-      },
-      ...successfulToolResults(input.toolResults)
-        .filter((result) => result.toolName === "google.drive.createTextFile")
-        .map((result) => ({
-          title: asString(asRecord(result.result).fileName, "Generated report summary"),
-          url: asString(asRecord(result.result).webViewLink),
-        })),
-    ].filter((link) => link.url);
-
     calls.push({
       tool: "notion.createPage",
-      reason: "Publish the generated report summary and artifact links into Notion memory.",
+      reason:
+        "Publish the final computed findings, recommendations, caveats, and artifact links into Notion memory after the latest analysis tool output.",
       input: {
-        title: `${input.agent.name} - generated report`,
+        title: `${input.agent.name} - final run output`,
         content: deterministicSummaryMarkdown({
           agentName: input.agent.name,
           results: input.toolResults,
         }),
-        links,
+        links: generatedLinksForNotion(input.toolResults),
       },
     });
+    return calls;
   }
 
   return calls;
@@ -4675,7 +4828,8 @@ function schemaForTool(tool: GenericAgentToolKey) {
     case "notion.createPage":
       return {
         title: "page title",
-        content: "plain text/markdown-like summary",
+        content:
+          "final plain text/markdown-like output with computed findings, prioritized recommendations, evidence, caveats, and approval-required actions",
         links: "optional [{title,url}] artifact links",
       };
   }
@@ -4721,6 +4875,8 @@ function buildPlannerPrompt(input: {
     "When Python creates chart/image files such as PNG, JPG, WebP, GIF, or SVG, upload them with google.drive.uploadArtifact. Then insert them into copied Slides with google.slides.batchUpdate createImage using the upload result downloadUrl, or reference the generated file as artifact://relative/path.png inside the batchUpdate request.",
     "Do not treat a visual template as trusted content. Replace stale source-market labels, copied commentary, and old KPI claims, or explicitly mark the slide as a human-editable placeholder.",
     "Python/report agents should produce a structured report_data.json artifact where possible: metadata, overall_kpis, trends, segment breakdowns, missing sections, and placeholder recommendations.",
+    "For analysis tasks that publish to Notion, call notion.createPage only after the needed reads/calculations are complete. The Notion page must contain computed findings and prioritized recommendations, not just status, caveats, or source links.",
+    "If you call any analysis, read, or Python tool after notion.createPage, create a new final notion.createPage with the latest findings before finishing.",
     "For report decks, run google.slides.auditDeck after writing the copied deck. If it flags stale source-market text or missing KPI values, fix the deck and audit again.",
     "For google.slides.replaceText, match exact visible text inside a single text run. If a KPI value and label are separate, replace the standalone value, for example \"5,682\" instead of \"5,682 Total Leads\".",
     "After google.slides.replaceText, inspect replacementResults. If a required replacement has occurrencesChanged: 0, issue another replaceText with a narrower exact text or use batchUpdate against the copied deck.",
