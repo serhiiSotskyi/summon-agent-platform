@@ -283,8 +283,8 @@ function hasAnyTool(tools: string[], candidates: string[]) {
   return candidates.some((tool) => tools.includes(tool));
 }
 
-export function normalizeAgentToolSelection(selectedTools: string[]) {
-  const tools = [...DEFAULT_AGENT_TOOL_KEYS, ...selectedTools].filter(
+function expandAgentToolSelection(selectedTools: string[]) {
+  const tools = selectedTools.filter(
     (tool, index, all) => {
       return typeof tool === "string" && tool.trim() && all.indexOf(tool) === index;
     },
@@ -334,4 +334,16 @@ export function normalizeAgentToolSelection(selectedTools: string[]) {
   }
 
   return tools;
+}
+
+export function normalizeAgentToolSelection(selectedTools: string[]) {
+  return expandAgentToolSelection([...DEFAULT_AGENT_TOOL_KEYS, ...selectedTools]);
+}
+
+export function normalizeExplicitAgentToolSelection(selectedTools: string[]) {
+  return expandAgentToolSelection(selectedTools);
+}
+
+export function normalizeDefaultAgentToolSelection() {
+  return normalizeAgentToolSelection([]);
 }

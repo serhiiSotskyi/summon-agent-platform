@@ -35,6 +35,8 @@ Claude should clarify the task, create a shared draft automation, queue a test r
 - Use the user's authorized Agent Platform workspace and role.
 - Do not use a shared admin account.
 - Ask before external sends, destructive changes, campaign/budget edits, or mutations to existing external files.
+- Use `best_value` model cost by default. Premium recurring models require explicit user approval.
+- Let Agent Platform infer the narrow connector/tool set from each brief instead of asking nontechnical users to pick tools manually.
 - Make blockers explicit instead of pretending an automation is ready.
 
 ## Organization Rollout

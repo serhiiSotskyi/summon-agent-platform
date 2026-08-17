@@ -51,12 +51,16 @@ When calling `summon_create_automation_from_brief`, include:
 - `schedule`: only when cadence is known
 - `references`: links, templates, output destinations, or inline process notes
 - `run_test`: true when the setup is ready to test
+- `cost_profile`: use `"best_value"` unless the user asks for cheapest, higher quality, or explicitly approves premium cost
+
+Treat `tools` as optional hints. Do not send broad connector lists. Agent Platform infers the narrow tool set from the brief and references, and it will reject premium model choices unless `cost_profile` is `"premium"` and `premium_model_approved` is true.
 
 ## Default Behavior
 
 - Create as draft unless the user explicitly asks to activate.
 - Run a manual test before activating scheduled work.
 - Use `ASK_BEFORE_CHANGES` and `ASK_BEFORE_SENDING` unless the user explicitly grants broader permission.
+- Use `best_value` model cost by default, not premium recurring models.
 - If a connector, credential, file, or permission is missing, report it as a blocker and explain what is needed.
 
 ## Response Format

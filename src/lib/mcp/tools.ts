@@ -9,6 +9,10 @@ import {
   readScheduleConfig,
   withAgentSchedulerId,
 } from "@/lib/agents/schedules";
+import {
+  inferAutomationPolicy,
+  type AutomationCostProfile,
+} from "@/lib/agents/automation-policy";
 import { SUMMON_MEMORY_SYSTEM_INSTRUCTION } from "@/lib/agents/defaults";
 import { createAgentFile } from "@/lib/agents/files";
 import { createManualAgentRun } from "@/lib/agents/runs";
@@ -21,10 +25,8 @@ import type { McpUserContext } from "@/lib/mcp/context";
 import { enqueueApprovedAction } from "@/lib/queue/agent-runs";
 import {
   GENERIC_AGENT_TOOLS,
-  normalizeAgentToolSelection,
+  normalizeExplicitAgentToolSelection,
 } from "@/lib/tools/definitions";
-
-const AUTOMATION_BRIEF_DEFAULT_OPENAI_MODEL = "gpt-4.1";
 
 type JsonSchema = {
   [key: string]: unknown;
@@ -74,6 +76,8 @@ const actionPermissionModeSchema = z
 const deliveryPermissionModeSchema = z
   .enum(["ASK_BEFORE_SENDING", "SEND_AUTOMATICALLY"])
   .optional();
+const costProfileSchema = z.enum(["cheap", "best_value", "high_quality", "premium"]);
+const costProfileWithDefaultSchema = costProfileSchema.default("best_value");
 const agentReferenceRoleSchema = z.enum([
   "input_data",
   "helper_code",
@@ -110,10 +114,18 @@ const workspaceJsonProperty = {
 const toolKeysProperty = {
   type: "array",
   description:
-    "Optional Summon connector/tool keys. Omit to keep the platform default tool set.",
+    "Optional Summon connector/tool hints. For automation briefs, Agent Platform infers and narrows tools from the task instead of blindly enabling every requested tool.",
   items: {
     type: "string",
   },
+};
+
+const costProfileJsonProperty = {
+  type: "string",
+  enum: ["cheap", "best_value", "high_quality", "premium"],
+  default: "best_value",
+  description:
+    "Cost policy hint. Use best_value by default. Premium models require premium_model_approved=true and explicit user approval.",
 };
 
 const scheduleJsonProperty = {
@@ -232,6 +244,7 @@ export const MCP_TOOLS = [
           enum: ["ASK_BEFORE_SENDING", "SEND_AUTOMATICALLY"],
           default: "ASK_BEFORE_SENDING",
         },
+        cost_profile: costProfileJsonProperty,
         description: { type: "string" },
         llm_model: { type: "string" },
         llm_provider: { type: "string", enum: ["openai", "anthropic", "google"] },
@@ -251,6 +264,12 @@ export const MCP_TOOLS = [
           type: "string",
           description:
             "Optional complete system prompt. Use prompt instead unless you need precise low-level control.",
+        },
+        premium_model_approved: {
+          type: "boolean",
+          default: false,
+          description:
+            "Must be true only when the user explicitly approved premium recurring model cost.",
         },
         tools: toolKeysProperty,
         trigger_type: { type: "string", enum: ["MANUAL", "SCHEDULED"], default: "MANUAL" },
@@ -291,10 +310,17 @@ export const MCP_TOOLS = [
           description:
             "Use ASK_BEFORE_SENDING unless the user explicitly allows automatic delivery.",
         },
+        cost_profile: costProfileJsonProperty,
         llm_model: {
           type: "string",
           description:
-            "Optional model override. Defaults to gpt-4.1 for OpenAI automations to keep recurring run costs controlled.",
+            "Optional model hint. Premium recurring models are replaced unless cost_profile is premium and premium_model_approved is true.",
+        },
+        premium_model_approved: {
+          type: "boolean",
+          default: false,
+          description:
+            "Must be true only when the user explicitly approved premium recurring model cost.",
         },
         desired_outcome: {
           type: "string",
@@ -1144,11 +1170,13 @@ const TOOL_HANDLERS = {
       z.object({
         ...workspaceIdSchema,
         action_permission_mode: actionPermissionModeSchema,
+        cost_profile: costProfileWithDefaultSchema,
         delivery_permission_mode: deliveryPermissionModeSchema,
         description: z.string().optional(),
         llm_model: z.string().optional(),
         llm_provider: llmProviderSchema.optional(),
         name: z.string().min(1),
+        premium_model_approved: z.boolean().default(false),
         prompt: z.string().optional(),
         schedule: scheduleSchema,
         status: z.enum(["DRAFT", "ACTIVE", "PAUSED"]).default("DRAFT"),
@@ -1162,6 +1190,7 @@ const TOOL_HANDLERS = {
     requireCanCreate(selected);
 
     const defaults = getDefaultLlmSettings();
+    const llmProvider = input.llm_provider ?? defaults.provider;
     const trigger = buildTriggerConfig({
       schedule: input.schedule,
       triggerType: input.trigger_type,
@@ -1174,19 +1203,31 @@ const TOOL_HANDLERS = {
       agentPromptFromObjective(
         input.prompt ?? `${input.name}: ${input.description ?? "Workspace automation."}`,
       );
+    const policy = inferAutomationPolicy({
+      actionPermissionMode: input.action_permission_mode,
+      costProfile: input.cost_profile as AutomationCostProfile,
+      defaultModel: defaults.model,
+      deliveryPermissionMode: input.delivery_permission_mode,
+      desiredOutcome: input.description,
+      llmProvider,
+      premiumModelApproved: input.premium_model_approved,
+      requestedModel: input.llm_model,
+      requestedTools: input.tools,
+      taskBrief: input.prompt ?? `${input.name}: ${input.description ?? "Workspace automation."}`,
+    });
 
     const agent = await getDb().agent.create({
       data: {
-        actionPermissionMode: input.action_permission_mode ?? "ASK_BEFORE_CHANGES",
+        actionPermissionMode: policy.actionPermissionMode,
         createdById: selected.user.id,
-        deliveryPermissionMode: input.delivery_permission_mode ?? "ASK_BEFORE_SENDING",
+        deliveryPermissionMode: policy.deliveryPermissionMode,
         description: input.description ?? "Agent created through the Summon MCP connector.",
-        llmModel: input.llm_model ?? defaults.model,
-        llmProvider: input.llm_provider ?? defaults.provider,
+        llmModel: policy.llmModel,
+        llmProvider: policy.llmProvider,
         name: input.name,
         status: activateScheduled ? "DRAFT" : requestedStatus,
         systemPrompt,
-        tools: normalizeAgentToolSelection(input.tools ?? []) as Prisma.InputJsonArray,
+        tools: policy.tools as Prisma.InputJsonArray,
         triggerConfig: trigger.triggerConfig,
         triggerType: trigger.triggerType,
         workspaceId: selected.workspace.id,
@@ -1219,6 +1260,7 @@ const TOOL_HANDLERS = {
     return textResult({
       agent: summarizeAgent(updatedAgent),
       appUrl: `/app/agents/${updatedAgent.id}?workspace=${selected.workspace.id}`,
+      automationPolicy: plainJson(policy),
       workspace: selected.workspace,
     });
   },
@@ -1229,10 +1271,12 @@ const TOOL_HANDLERS = {
         ...workspaceIdSchema,
         action_permission_mode: actionPermissionModeSchema,
         audience: z.string().optional(),
+        cost_profile: costProfileWithDefaultSchema,
         delivery_permission_mode: deliveryPermissionModeSchema,
         desired_outcome: z.string().optional(),
         llm_model: z.string().optional(),
         name: z.string().optional(),
+        premium_model_approved: z.boolean().default(false),
         references: z.array(agentReferenceSchema).default([]),
         run_test: z.boolean().default(false),
         schedule: scheduleSchema,
@@ -1260,6 +1304,22 @@ const TOOL_HANDLERS = {
     }
 
     const defaults = getDefaultLlmSettings();
+    const policy = inferAutomationPolicy({
+      actionPermissionMode: input.action_permission_mode,
+      audience: input.audience,
+      costProfile: input.cost_profile as AutomationCostProfile,
+      defaultModel: defaults.model,
+      deliveryPermissionMode: input.delivery_permission_mode,
+      desiredOutcome: input.desired_outcome,
+      llmProvider: defaults.provider,
+      premiumModelApproved: input.premium_model_approved,
+      references: input.references,
+      requestedModel: input.llm_model,
+      requestedTools: input.tools,
+      sharingNotes: input.sharing_notes,
+      successCriteria: input.success_criteria,
+      taskBrief: input.task_brief,
+    });
     const name = input.name?.trim() || deriveAutomationName(input.task_brief);
     const trigger = buildTriggerConfig({
       schedule: input.schedule,
@@ -1275,26 +1335,20 @@ const TOOL_HANDLERS = {
       successCriteria: input.success_criteria,
       taskBrief: input.task_brief,
     });
-    const llmModel =
-      input.llm_model ??
-      (defaults.provider === "openai"
-        ? AUTOMATION_BRIEF_DEFAULT_OPENAI_MODEL
-        : defaults.model);
-
     const agent = await getDb().agent.create({
       data: {
-        actionPermissionMode: input.action_permission_mode ?? "ASK_BEFORE_CHANGES",
+        actionPermissionMode: policy.actionPermissionMode,
         createdById: selected.user.id,
-        deliveryPermissionMode: input.delivery_permission_mode ?? "ASK_BEFORE_SENDING",
+        deliveryPermissionMode: policy.deliveryPermissionMode,
         description:
           input.desired_outcome ??
           "Team automation created from a Claude/Cowork recurring-task brief.",
-        llmModel,
-        llmProvider: defaults.provider,
+        llmModel: policy.llmModel,
+        llmProvider: policy.llmProvider,
         name,
         status: activateScheduled ? "DRAFT" : requestedStatus,
         systemPrompt,
-        tools: normalizeAgentToolSelection(input.tools ?? []) as Prisma.InputJsonArray,
+        tools: policy.tools as Prisma.InputJsonArray,
         triggerConfig: trigger.triggerConfig,
         triggerType: trigger.triggerType,
         workspaceId: selected.workspace.id,
@@ -1360,6 +1414,7 @@ const TOOL_HANDLERS = {
 
     return textResult({
       automation: summarizeAgent(updatedAgent),
+      automationPolicy: plainJson(policy),
       automationUrl: appUrl(
         `/app/agents/${updatedAgent.id}?workspace=${selected.workspace.id}`,
       ),
@@ -1385,11 +1440,13 @@ const TOOL_HANDLERS = {
         ...workspaceIdSchema,
         action_permission_mode: actionPermissionModeSchema,
         agent_id: z.string().min(1),
+        cost_profile: costProfileSchema.optional(),
         delivery_permission_mode: deliveryPermissionModeSchema,
         description: z.string().optional(),
         llm_model: z.string().optional(),
         llm_provider: llmProviderSchema.optional(),
         name: z.string().optional(),
+        premium_model_approved: z.boolean().default(false),
         prompt: z.string().optional(),
         schedule: scheduleSchema,
         system_prompt: z.string().optional(),
@@ -1401,6 +1458,27 @@ const TOOL_HANDLERS = {
     const selected = await contextForArgs(context, input.workspace_id);
     requireCanCreate(selected);
     const existing = await getAgentForWorkspace(input.agent_id, selected.workspace.id);
+    const llmProvider = llmProviderSchema.parse(input.llm_provider ?? existing.llmProvider);
+    const existingTools = Array.isArray(existing.tools)
+      ? existing.tools.filter((tool): tool is string => typeof tool === "string")
+      : [];
+    const policy = inferAutomationPolicy({
+      actionPermissionMode: input.action_permission_mode ?? existing.actionPermissionMode,
+      costProfile: input.cost_profile as AutomationCostProfile,
+      defaultModel: existing.llmModel,
+      deliveryPermissionMode:
+        input.delivery_permission_mode ?? existing.deliveryPermissionMode,
+      desiredOutcome: input.description ?? existing.description ?? undefined,
+      llmProvider,
+      premiumModelApproved: input.premium_model_approved,
+      requestedModel: input.llm_model ?? existing.llmModel,
+      requestedTools: input.tools,
+      taskBrief:
+        input.prompt ??
+        input.description ??
+        existing.description ??
+        existing.name,
+    });
     const trigger =
       input.trigger_type || input.schedule
         ? buildTriggerConfig({
@@ -1413,12 +1491,14 @@ const TOOL_HANDLERS = {
     const updatedAgent = await getDb().agent.update({
       where: { id: existing.id },
       data: {
-        actionPermissionMode: input.action_permission_mode ?? existing.actionPermissionMode,
-        deliveryPermissionMode:
-          input.delivery_permission_mode ?? existing.deliveryPermissionMode,
+        actionPermissionMode: policy.actionPermissionMode,
+        deliveryPermissionMode: policy.deliveryPermissionMode,
         description: input.description ?? existing.description,
-        llmModel: input.llm_model ?? existing.llmModel,
-        llmProvider: input.llm_provider ?? existing.llmProvider,
+        llmModel:
+          input.llm_model !== undefined || input.cost_profile !== undefined
+            ? policy.llmModel
+            : existing.llmModel,
+        llmProvider,
         name: input.name ?? existing.name,
         systemPrompt: input.system_prompt
           ? input.system_prompt
@@ -1427,8 +1507,8 @@ const TOOL_HANDLERS = {
             : existing.systemPrompt,
         tools:
           input.tools !== undefined
-            ? (normalizeAgentToolSelection(input.tools) as Prisma.InputJsonArray)
-            : (existing.tools as Prisma.InputJsonValue),
+            ? (policy.tools as Prisma.InputJsonArray)
+            : (normalizeExplicitAgentToolSelection(existingTools) as Prisma.InputJsonArray),
         triggerConfig: trigger?.triggerConfig ?? existing.triggerConfig ?? Prisma.DbNull,
         triggerType: trigger?.triggerType ?? existing.triggerType,
       },
@@ -1438,6 +1518,7 @@ const TOOL_HANDLERS = {
 
     return textResult({
       agent: summarizeAgent(updatedAgent),
+      automationPolicy: plainJson(policy),
       appUrl: `/app/agents/${updatedAgent.id}?workspace=${selected.workspace.id}`,
       workspace: selected.workspace,
     });

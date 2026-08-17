@@ -49,8 +49,19 @@ Use:
 - `run_test: true` after the user answers the setup questions
 - `action_permission_mode: "ASK_BEFORE_CHANGES"`
 - `delivery_permission_mode: "ASK_BEFORE_SENDING"`
+- `cost_profile: "best_value"`
 
 Use `status: "ACTIVE"` only if the user explicitly asks you to activate the schedule now.
+
+## Cost and Tool Selection
+
+- Do not request premium recurring models by default.
+- Use `cost_profile: "cheap"` for simple extraction, formatting, or summary tasks.
+- Use `cost_profile: "best_value"` for normal operations work, data checks, and team reporting.
+- Use `cost_profile: "high_quality"` only when the result needs stronger reasoning or client-facing polish.
+- Use `cost_profile: "premium"` and `premium_model_approved: true` only when the user explicitly approves premium model cost.
+- Treat `tools` as optional hints. Prefer omitting broad tool lists; Agent Platform will infer the narrow connector/tool set from the task brief and references.
+- If the task is based on a Google Sheet and publishes shared results, the platform should usually need only Sheets read access, Python analysis, and Notion output.
 
 ## Final Response
 

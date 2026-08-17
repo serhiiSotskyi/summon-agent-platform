@@ -29,7 +29,10 @@ import {
   type ApprovedActionJob,
   type ManualAgentRunJob,
 } from "@/lib/queue/agent-runs";
-import { normalizeAgentToolSelection } from "@/lib/tools/definitions";
+import {
+  normalizeDefaultAgentToolSelection,
+  normalizeExplicitAgentToolSelection,
+} from "@/lib/tools/definitions";
 
 type CreateManualAgentRunInput = {
   agentId: string;
@@ -49,10 +52,10 @@ const CONNECTOR_CONTEXT_TIMEOUT_MS = 45_000;
 
 function normalizeTools(tools: Prisma.JsonValue) {
   if (!Array.isArray(tools)) {
-    return normalizeAgentToolSelection([]);
+    return normalizeDefaultAgentToolSelection();
   }
 
-  return normalizeAgentToolSelection(
+  return normalizeExplicitAgentToolSelection(
     tools.filter((tool): tool is string => typeof tool === "string"),
   );
 }

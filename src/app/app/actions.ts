@@ -37,7 +37,10 @@ import { createWorkspaceWithOwnerMembership } from "@/lib/app/workspaces";
 import { getDb } from "@/lib/db";
 import { llmProviderSchema } from "@/lib/env";
 import { enqueueApprovedAction } from "@/lib/queue/agent-runs";
-import { normalizeAgentToolSelection } from "@/lib/tools/definitions";
+import {
+  normalizeDefaultAgentToolSelection,
+  normalizeExplicitAgentToolSelection,
+} from "@/lib/tools/definitions";
 
 function requireContext(workspaceId?: string) {
   return getCurrentUserContext(workspaceId).then((context) => {
@@ -65,7 +68,9 @@ function selectedAgentTools(formData: FormData) {
     .getAll("tools")
     .filter((value): value is string => typeof value === "string");
 
-  return normalizeAgentToolSelection(selectedConnectors);
+  return selectedConnectors.length > 0
+    ? normalizeExplicitAgentToolSelection(selectedConnectors)
+    : normalizeDefaultAgentToolSelection();
 }
 
 function triggerConfigFromFormData(formData: FormData, agentId?: string) {

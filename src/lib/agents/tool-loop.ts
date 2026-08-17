@@ -30,7 +30,7 @@ import {
   GENERIC_AGENT_TOOLS,
   genericToolDefinition,
   isGenericAgentToolKey,
-  normalizeAgentToolSelection,
+  normalizeExplicitAgentToolSelection,
   type GenericAgentToolKey,
 } from "@/lib/tools/definitions";
 import { runPythonInSandbox } from "@/lib/tools/python-sandbox";
@@ -4667,7 +4667,7 @@ function parsePlannedToolCalls(text: string): PlannedToolCall[] {
 }
 
 function selectedGenericTools(selectedTools: string[]) {
-  return normalizeAgentToolSelection(selectedTools).filter(isGenericAgentToolKey);
+  return normalizeExplicitAgentToolSelection(selectedTools).filter(isGenericAgentToolKey);
 }
 
 function toolDocs(toolKeys: GenericAgentToolKey[]) {
