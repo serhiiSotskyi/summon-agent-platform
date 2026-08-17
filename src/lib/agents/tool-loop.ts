@@ -41,6 +41,8 @@ const MAX_TOOL_CALLS_PER_ITERATION = 5;
 const MAX_DETERMINISTIC_FINALIZATION_STEPS = 8;
 const TOOL_LLM_TIMEOUT_MS = 45_000;
 const FINAL_LLM_TIMEOUT_MS = 45_000;
+const SHEET_PROMPT_SAMPLE_ROWS = 24;
+const SHEET_PROMPT_SAMPLE_COLUMNS = 24;
 
 type ToolLoopAgent = Pick<
   Agent,
@@ -89,6 +91,17 @@ type RuntimeState = {
     mimeType: string | null;
   }>;
   protectedActionRequests: string[];
+  runtimeFiles: Array<
+    Pick<
+      AgentFile,
+      | "name"
+      | "role"
+      | "sourceType"
+      | "originalFileName"
+      | "contentText"
+      | "mimeType"
+    >
+  >;
 };
 
 type WorkflowRequirementState = {
@@ -161,6 +174,42 @@ function compactText(value: unknown, maxLength = 3000) {
   }
 
   return `${value.slice(0, maxLength)}\n...[truncated ${value.length - maxLength} chars]`;
+}
+
+function safeRuntimeFileName(value: string) {
+  const cleaned = value
+    .replace(/[/\\\0]/g, "_")
+    .replace(/[\x00-\x1F\x7F]/g, "_")
+    .trim()
+    .slice(0, 120);
+
+  return cleaned || `runtime_data_${Date.now()}.json`;
+}
+
+function stageRuntimeDataFile(input: {
+  state: RuntimeState;
+  fileName: string;
+  content: string;
+  mimeType: string;
+}) {
+  const fileName = safeRuntimeFileName(input.fileName);
+  input.state.runtimeFiles.push({
+    name: fileName,
+    role: "runtime_data",
+    sourceType: "uploaded_text",
+    originalFileName: fileName,
+    contentText: input.content,
+    mimeType: input.mimeType,
+  });
+
+  return {
+    fileName,
+    mimeType: input.mimeType,
+    sizeBytes: Buffer.byteLength(input.content, "utf8"),
+    pythonPath: `.runtime/${fileName}`,
+    usage:
+      "Use python.run and read this file from the sandbox working directory instead of copying sheet rows into generated code.",
+  };
 }
 
 type ToolResultFocus = {
@@ -432,6 +481,33 @@ function compactToolInputForPrompt(toolName: string, value: unknown) {
   return input;
 }
 
+function sheetValues(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((row): row is unknown[] => Array.isArray(row))
+    : [];
+}
+
+function sheetColumnCount(rows: unknown[][]) {
+  return rows.reduce((max, row) => Math.max(max, row.length), 0);
+}
+
+function compactSheetCell(value: unknown) {
+  return compactText(
+    value === null || value === undefined
+      ? ""
+      : typeof value === "string"
+        ? value
+        : String(value),
+    180,
+  );
+}
+
+function compactSheetRow(row: unknown[]) {
+  return row
+    .slice(0, SHEET_PROMPT_SAMPLE_COLUMNS)
+    .map((cell) => compactSheetCell(cell));
+}
+
 function compactToolResultForPrompt(value: unknown, focus?: ToolResultFocus) {
   const record = asRecord(value);
   const toolName = asString(record.toolName);
@@ -495,6 +571,39 @@ function compactToolResultForPrompt(value: unknown, focus?: ToolResultFocus) {
         documentId: result.documentId,
         title: result.title,
         preview: compactText(result.preview, 2400),
+      },
+    };
+  }
+
+  if (toolName === "google.sheets.readRange") {
+    const rows = sheetValues(result.values);
+    const rowCount = asNumber(result.rowCount, rows.length);
+    const columnCount = asNumber(result.columnCount, sheetColumnCount(rows));
+    const sampleRows = rows.slice(0, SHEET_PROMPT_SAMPLE_ROWS);
+
+    return {
+      ...base,
+      result: {
+        range: result.range,
+        majorDimension: result.majorDimension,
+        mode: result.mode,
+        note: result.note,
+        rowCount,
+        columnCount,
+        returnedRowCount: asNumber(result.returnedRowCount, rows.length),
+        returnedColumnCount: asNumber(
+          result.returnedColumnCount,
+          sheetColumnCount(rows),
+        ),
+        dataFile: result.dataFile,
+        headers: sampleRows[0] ? compactSheetRow(sampleRows[0]) : [],
+        sampleRows: sampleRows.slice(1).map((row) => compactSheetRow(row)),
+        truncated:
+          result.truncated === true ||
+          rowCount > sampleRows.length ||
+          columnCount > SHEET_PROMPT_SAMPLE_COLUMNS,
+        promptPreview:
+          "Only a compact sample is included here. Use dataFile with python.run for full-sheet calculations.",
       },
     };
   }
@@ -4498,7 +4607,8 @@ function schemaForTool(tool: GenericAgentToolKey) {
       return {
         spreadsheetUrl: "Google Sheets URL, optional alternative to spreadsheetId",
         spreadsheetId: "Google Sheets id",
-        range: "A1 range, e.g. Sheet1!A1:D20",
+        range:
+          "Bounded A1 range, e.g. Sheet1!A1:D100. Avoid whole-column ranges like A:ZZ unless a preview is enough.",
       };
     case "google.sheets.createSpreadsheet":
       return {
@@ -4605,6 +4715,7 @@ function buildPlannerPrompt(input: {
     "For Google Docs template work, first copy or create the document, then replace placeholders or batch update only the copied/run-owned Doc.",
     "When creating a new Google Doc report/brief, pass the complete markdown body in google.docs.createDocument.content so the platform can insert and verify formatted content immediately. Do not create an empty Doc and stop.",
     "For spreadsheet/table outputs, use google.sheets.createSpreadsheet to create a run-owned native Google Sheet, seed rows when available, then use google.sheets.updateRange/readRange for follow-up edits and verification.",
+    "When google.sheets.readRange returns dataFile, use python.run to load that JSON file for calculations. Do not copy large sheet row arrays into generated Python code or future tool inputs.",
     "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
     "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
     "When Python creates chart/image files such as PNG, JPG, WebP, GIF, or SVG, upload them with google.drive.uploadArtifact. Then insert them into copied Slides with google.slides.batchUpdate createImage using the upload result downloadUrl, or reference the generated file as artifact://relative/path.png inside the batchUpdate request.",
@@ -5042,64 +5153,64 @@ async function executeOneTool(input: {
       (async () => {
         let result: unknown;
 
-    if (toolName === "python.run") {
-      const sandbox = await runPythonInSandbox({
-          runId: input.agentRunId,
-          files: input.agent.files,
-          code: asString(request.code),
-          entryFile: asString(request.entryFile),
-          args: asStringArray(request.args),
-          timeoutMs: toolTimeoutMs,
-        });
-      const generatedArtifacts = [];
-      for (const file of sandbox.generatedFiles) {
-        let parsedJson: Record<string, unknown> | undefined;
-        if (file.relativePath.toLowerCase().endsWith(".json") && file.contentPreview) {
-          try {
-            parsedJson = JSON.parse(file.contentPreview) as Record<string, unknown>;
-          } catch {
-            parsedJson = undefined;
+        if (toolName === "python.run") {
+          const sandbox = await runPythonInSandbox({
+            runId: input.agentRunId,
+            files: [...input.agent.files, ...input.state.runtimeFiles],
+            code: asString(request.code),
+            entryFile: asString(request.entryFile),
+            args: asStringArray(request.args),
+            timeoutMs: toolTimeoutMs,
+          });
+          const generatedArtifacts = [];
+          for (const file of sandbox.generatedFiles) {
+            let parsedJson: Record<string, unknown> | undefined;
+            if (file.relativePath.toLowerCase().endsWith(".json") && file.contentPreview) {
+              try {
+                parsedJson = JSON.parse(file.contentPreview) as Record<string, unknown>;
+              } catch {
+                parsedJson = undefined;
+              }
+            }
+            generatedArtifacts.push(
+              artifactOutput(
+                await createArtifact({
+                  agentRunId: input.agentRunId,
+                  toolCallId: toolCall.id,
+                  artifactType: "sandbox_file",
+                  name: file.relativePath,
+                  location: file.path,
+                  mimeType: mimeTypeForArtifactName(file.relativePath),
+                  payload: {
+                    sizeBytes: file.sizeBytes,
+                    contentPreview: file.contentPreview,
+                    ...(parsedJson ? { parsedJson } : {}),
+                  },
+                }),
+              ),
+            );
           }
+          artifacts.push(...generatedArtifacts);
+          if (sandbox.timedOut) {
+            throw new Error(
+              `Python sandbox timed out after ${sandbox.durationMs}ms.\n${sandbox.stderr}`,
+            );
+          }
+          if (sandbox.exitCode !== 0) {
+            throw new Error(
+              `Python sandbox exited with code ${sandbox.exitCode}.\n${sandbox.stderr}`,
+            );
+          }
+          result = {
+            command: sandbox.command,
+            exitCode: sandbox.exitCode,
+            timedOut: sandbox.timedOut,
+            stdout: sandbox.stdout,
+            stderr: sandbox.stderr,
+            durationMs: sandbox.durationMs,
+            files: generatedArtifacts,
+          };
         }
-        generatedArtifacts.push(
-          artifactOutput(
-            await createArtifact({
-              agentRunId: input.agentRunId,
-              toolCallId: toolCall.id,
-              artifactType: "sandbox_file",
-              name: file.relativePath,
-              location: file.path,
-              mimeType: mimeTypeForArtifactName(file.relativePath),
-              payload: {
-                sizeBytes: file.sizeBytes,
-                contentPreview: file.contentPreview,
-                ...(parsedJson ? { parsedJson } : {}),
-              },
-            }),
-          ),
-        );
-      }
-      artifacts.push(...generatedArtifacts);
-      if (sandbox.timedOut) {
-        throw new Error(
-          `Python sandbox timed out after ${sandbox.durationMs}ms.\n${sandbox.stderr}`,
-        );
-      }
-      if (sandbox.exitCode !== 0) {
-        throw new Error(
-          `Python sandbox exited with code ${sandbox.exitCode}.\n${sandbox.stderr}`,
-        );
-      }
-      result = {
-        command: sandbox.command,
-        exitCode: sandbox.exitCode,
-        timedOut: sandbox.timedOut,
-        stdout: sandbox.stdout,
-        stderr: sandbox.stderr,
-        durationMs: sandbox.durationMs,
-        files: generatedArtifacts,
-      };
-    }
 
     if (toolName === "web.search") {
       result = await searchWeb({
@@ -5313,11 +5424,21 @@ async function executeOneTool(input: {
       if (!spreadsheetId) {
         throw new Error("google.sheets.readRange requires spreadsheetId or spreadsheetUrl.");
       }
-      result = await readGoogleSheetRange({
+      const sheetResult = await readGoogleSheetRange({
         workspaceId: input.workspaceId,
         spreadsheetId,
         range,
       });
+      const dataFile = stageRuntimeDataFile({
+        state: input.state,
+        fileName: `google_sheets_${toolCall.id}.json`,
+        mimeType: "application/json",
+        content: JSON.stringify(sheetResult, null, 2),
+      });
+      result = {
+        ...asRecord(sheetResult),
+        dataFile,
+      };
     }
 
     if (toolName === "google.sheets.createSpreadsheet") {
@@ -5698,6 +5819,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
     createdGoogleFileIds: new Set(),
     createdGoogleFiles: [],
     protectedActionRequests: [],
+    runtimeFiles: [],
   };
   const workflowRequirements = inferWorkflowRequirements({
     agent: input.agent,

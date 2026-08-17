@@ -131,6 +131,8 @@ const GOOGLE_SCOPE_WARNING =
   "The Google credential does not include Docs/Sheets/Slides write scopes.";
 const NOTION_API_VERSION = "2022-06-28";
 const MAX_BLOCK_TEXT_LENGTH = 1800;
+const GOOGLE_SHEETS_FALLBACK_MAX_ROWS = 250;
+const GOOGLE_SHEETS_FALLBACK_MAX_COLUMNS = 60;
 
 function normalizeBinaryData(input: Buffer | Uint8Array | ArrayBuffer | string) {
   if (typeof input === "string") {
@@ -426,6 +428,28 @@ function readRowsRange(rows: string[][], range: string) {
   return rows
     .slice(parsed.startRow, endRow + 1)
     .map((row) => row.slice(parsed.startColumn, endColumn + 1));
+}
+
+function limitGoogleSheetFallbackValues(values: string[][]) {
+  const rowCount = values.length;
+  const columnCount = values.reduce((max, row) => Math.max(max, row.length), 0);
+  const limitedValues = values
+    .slice(0, GOOGLE_SHEETS_FALLBACK_MAX_ROWS)
+    .map((row) => row.slice(0, GOOGLE_SHEETS_FALLBACK_MAX_COLUMNS));
+
+  return {
+    values: limitedValues,
+    rowCount,
+    columnCount,
+    returnedRowCount: limitedValues.length,
+    returnedColumnCount: limitedValues.reduce(
+      (max, row) => Math.max(max, row.length),
+      0,
+    ),
+    truncated:
+      rowCount > GOOGLE_SHEETS_FALLBACK_MAX_ROWS ||
+      columnCount > GOOGLE_SHEETS_FALLBACK_MAX_COLUMNS,
+  };
 }
 
 function writeRowsRange(rows: string[][], range: string, values: unknown[][]) {
@@ -2138,14 +2162,23 @@ export async function readGoogleSheetRange(input: {
         accessToken,
         spreadsheetId: input.spreadsheetId,
       });
-      const values = readRowsRange(parseCsv(csv), input.range);
+      const limited = limitGoogleSheetFallbackValues(
+        readRowsRange(parseCsv(csv), input.range),
+      );
 
       return {
         range: input.range,
         majorDimension: "ROWS",
-        values,
+        values: limited.values,
+        rowCount: limited.rowCount,
+        columnCount: limited.columnCount,
+        returnedRowCount: limited.returnedRowCount,
+        returnedColumnCount: limited.returnedColumnCount,
+        truncated: limited.truncated,
         mode: "drive_csv_export_fallback",
-        note: "Google Sheets API is disabled. Returned values from Drive CSV export of the first sheet.",
+        note: limited.truncated
+          ? `Google Sheets API is disabled. Returned the first ${limited.returnedRowCount} rows and ${limited.returnedColumnCount} columns from Drive CSV export of the first sheet. Use a narrower range for exact data.`
+          : "Google Sheets API is disabled. Returned values from Drive CSV export of the first sheet.",
       };
     }
 

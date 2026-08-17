@@ -24,6 +24,8 @@ import {
   normalizeAgentToolSelection,
 } from "@/lib/tools/definitions";
 
+const AUTOMATION_BRIEF_DEFAULT_OPENAI_MODEL = "gpt-4.1";
+
 type JsonSchema = {
   [key: string]: unknown;
   type: "object";
@@ -288,6 +290,11 @@ export const MCP_TOOLS = [
           default: "ASK_BEFORE_SENDING",
           description:
             "Use ASK_BEFORE_SENDING unless the user explicitly allows automatic delivery.",
+        },
+        llm_model: {
+          type: "string",
+          description:
+            "Optional model override. Defaults to gpt-4.1 for OpenAI automations to keep recurring run costs controlled.",
         },
         desired_outcome: {
           type: "string",
@@ -1224,6 +1231,7 @@ const TOOL_HANDLERS = {
         audience: z.string().optional(),
         delivery_permission_mode: deliveryPermissionModeSchema,
         desired_outcome: z.string().optional(),
+        llm_model: z.string().optional(),
         name: z.string().optional(),
         references: z.array(agentReferenceSchema).default([]),
         run_test: z.boolean().default(false),
@@ -1267,6 +1275,11 @@ const TOOL_HANDLERS = {
       successCriteria: input.success_criteria,
       taskBrief: input.task_brief,
     });
+    const llmModel =
+      input.llm_model ??
+      (defaults.provider === "openai"
+        ? AUTOMATION_BRIEF_DEFAULT_OPENAI_MODEL
+        : defaults.model);
 
     const agent = await getDb().agent.create({
       data: {
@@ -1276,7 +1289,7 @@ const TOOL_HANDLERS = {
         description:
           input.desired_outcome ??
           "Team automation created from a Claude/Cowork recurring-task brief.",
-        llmModel: defaults.model,
+        llmModel,
         llmProvider: defaults.provider,
         name,
         status: activateScheduled ? "DRAFT" : requestedStatus,

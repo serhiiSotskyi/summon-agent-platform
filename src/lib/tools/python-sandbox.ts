@@ -58,12 +58,15 @@ async function writeUploadedFiles(workspaceDir: string, files: SandboxFile[]) {
       continue;
     }
 
+    const isRuntimeData = file.role === "runtime_data";
     const name = safeFileName(file.originalFileName ?? file.name);
-    const filePath = path.join(workspaceDir, name);
+    const relativePath = isRuntimeData ? path.join(".runtime", name) : name;
+    const filePath = path.join(workspaceDir, relativePath);
+    await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, file.contentText, "utf8");
     written.push({
       role: file.role,
-      name,
+      name: relativePath,
       path: filePath,
       mimeType: file.mimeType,
     });
@@ -94,6 +97,10 @@ async function listGeneratedFiles(workspaceDir: string) {
 
   for (const filePath of filePaths) {
     const relativePath = path.relative(workspaceDir, filePath);
+    if (relativePath.startsWith(`.runtime${path.sep}`)) {
+      continue;
+    }
+
     const fileStat = await stat(filePath);
     let contentPreview: string | undefined;
 
