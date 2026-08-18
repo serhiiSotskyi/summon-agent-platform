@@ -439,6 +439,7 @@ function limitGoogleSheetFallbackValues(values: string[][]) {
 
   return {
     values: limitedValues,
+    fullValues: values,
     rowCount,
     columnCount,
     returnedRowCount: limitedValues.length,
@@ -2135,6 +2136,7 @@ export async function replaceGoogleDocText(input: {
 }
 
 export async function readGoogleSheetRange(input: {
+  sheetGid?: string;
   workspaceId: string;
   spreadsheetId: string;
   range: string;
@@ -2160,16 +2162,16 @@ export async function readGoogleSheetRange(input: {
     if (isGoogleApiDisabledError(error)) {
       const csv = await exportGoogleSheetCsvViaDrive({
         accessToken,
+        sheetGid: input.sheetGid,
         spreadsheetId: input.spreadsheetId,
       });
-      const limited = limitGoogleSheetFallbackValues(
-        readRowsRange(parseCsv(csv), input.range),
-      );
+      const limited = limitGoogleSheetFallbackValues(readRowsRange(parseCsv(csv), input.range));
 
       return {
         range: input.range,
         majorDimension: "ROWS",
         values: limited.values,
+        fullValues: limited.fullValues,
         rowCount: limited.rowCount,
         columnCount: limited.columnCount,
         returnedRowCount: limited.returnedRowCount,
@@ -2177,8 +2179,8 @@ export async function readGoogleSheetRange(input: {
         truncated: limited.truncated,
         mode: "drive_csv_export_fallback",
         note: limited.truncated
-          ? `Google Sheets API is disabled. Returned the first ${limited.returnedRowCount} rows and ${limited.returnedColumnCount} columns from Drive CSV export of the first sheet. Use a narrower range for exact data.`
-          : "Google Sheets API is disabled. Returned values from Drive CSV export of the first sheet.",
+          ? `Google Sheets API is disabled. Returned a compact preview of ${limited.returnedRowCount} rows and ${limited.returnedColumnCount} columns from Drive CSV export${input.sheetGid ? ` of gid ${input.sheetGid}` : ""}. The runtime data file contains all ${limited.rowCount} requested rows for Python analysis.`
+          : `Google Sheets API is disabled. Returned values from Drive CSV export${input.sheetGid ? ` of gid ${input.sheetGid}` : ""}.`,
       };
     }
 
@@ -2188,16 +2190,19 @@ export async function readGoogleSheetRange(input: {
 
 async function exportGoogleSheetCsvViaDrive(input: {
   accessToken: string;
+  sheetGid?: string;
   spreadsheetId: string;
 }) {
-  const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-      input.spreadsheetId,
-    )}/export?mimeType=${encodeURIComponent("text/csv")}`,
-    {
-      headers: { Authorization: `Bearer ${input.accessToken}` },
-    },
-  );
+  const endpoint = input.sheetGid
+    ? `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
+        input.spreadsheetId,
+      )}/export?format=csv&gid=${encodeURIComponent(input.sheetGid)}`
+    : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        input.spreadsheetId,
+      )}/export?mimeType=${encodeURIComponent("text/csv")}`;
+  const response = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${input.accessToken}` },
+  });
   const text = await response.text();
 
   if (!response.ok) {

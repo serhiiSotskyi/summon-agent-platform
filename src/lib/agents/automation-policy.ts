@@ -146,7 +146,11 @@ function urlLooksLikeSlides(reference: AutomationPolicyReference) {
   return /docs\.google\.com\/presentation/i.test(reference.url ?? "");
 }
 
-function requestedToolsToKeep(input: AutomationPolicyInput, warnings: string[]) {
+function requestedToolsToKeep(
+  input: AutomationPolicyInput,
+  warnings: string[],
+  isCompatible: (tool: string) => boolean,
+) {
   const requested = (input.requestedTools ?? []).filter(Boolean);
   if (requested.length === 0) {
     return [];
@@ -164,7 +168,16 @@ function requestedToolsToKeep(input: AutomationPolicyInput, warnings: string[]) 
     return [];
   }
 
-  return uniqueRequested;
+  const compatible = uniqueRequested.filter(isCompatible);
+  const ignored = uniqueRequested.filter((tool) => !isCompatible(tool));
+
+  if (ignored.length > 0) {
+    warnings.push(
+      `Ignored requested tools that do not match the task brief: ${ignored.join(", ")}.`,
+    );
+  }
+
+  return compatible;
 }
 
 export function inferAutomationPolicy(input: AutomationPolicyInput): AutomationPolicy {
@@ -323,7 +336,62 @@ export function inferAutomationPolicy(input: AutomationPolicyInput): AutomationP
     addTool(tools, reasons, "google.drive.createTextFile", "Google Drive file output detected.");
   }
 
-  for (const tool of requestedToolsToKeep(input, warnings)) {
+  const inferredTools = new Set(tools);
+  const requestedToolMatchesBrief = (tool: string) => {
+    if (inferredTools.has(tool)) {
+      return true;
+    }
+
+    if (tool === "google-drive") {
+      return (
+        mentionsSheets ||
+        wantsDocs ||
+        wantsSlides ||
+        wantsDriveOutput ||
+        Array.from(inferredTools).some((candidate) => candidate.startsWith("google."))
+      );
+    }
+
+    if (tool === "notion") {
+      return inferredTools.has("notion.createPage") || wantsNotion;
+    }
+
+    if (tool === "python.run") {
+      return needsComputation;
+    }
+
+    if (tool === "web.search" || tool === "web.readPage") {
+      return wantsWeb;
+    }
+
+    if (tool === "google-ads") {
+      return wantsLiveAds && !hasSheetReference;
+    }
+
+    if (tool === "ga4") {
+      return wantsAnalytics;
+    }
+
+    if (tool.startsWith("google.sheets.")) {
+      return mentionsSheets;
+    }
+
+    if (tool.startsWith("google.docs.")) {
+      return wantsDocs;
+    }
+
+    if (tool.startsWith("google.slides.")) {
+      return wantsSlides;
+    }
+
+    if (tool.startsWith("google.drive.")) {
+      return wantsDriveOutput || wantsDocs || wantsSlides;
+    }
+
+    return false;
+  };
+
+  for (const tool of requestedToolsToKeep(input, warnings, requestedToolMatchesBrief)) {
     tools.add(tool);
     addReason(reasons, `Claude requested tool ${tool}; included as a narrow explicit request.`);
   }

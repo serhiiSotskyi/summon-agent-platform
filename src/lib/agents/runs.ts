@@ -50,6 +50,8 @@ const DEFAULT_STALE_RUN_TIMEOUT_MS = 600_000;
 const MANUAL_RUN_DEDUPE_WINDOW_MS = 30_000;
 const CONNECTOR_CONTEXT_TIMEOUT_MS = 45_000;
 
+type ConnectorContext = Awaited<ReturnType<typeof collectReadOnlyConnectorContext>>;
+
 function normalizeTools(tools: Prisma.JsonValue) {
   if (!Array.isArray(tools)) {
     return normalizeDefaultAgentToolSelection();
@@ -136,7 +138,7 @@ function getStaleRunTimeoutMs() {
 }
 
 function isCriticalWorkflowOutcome(outcome: string) {
-  return /copy the source\/template deck|create or copy a run-owned google doc|write the required google doc|generated google doc read-back was empty|populate the copied google slides deck|do not stop after creating an empty document/i.test(
+  return /run python analysis successfully|copy the source\/template deck|create or copy a run-owned google doc|write the required google doc|generated google doc read-back was empty|populate the copied google slides deck|do not stop after creating an empty document/i.test(
     outcome,
   );
 }
@@ -201,6 +203,110 @@ function connectorTimeoutContext(tools: string[], error: unknown) {
     ],
     blockers: [message],
   };
+}
+
+function agentRequirementText(agent: {
+  description: string | null;
+  files: Array<{
+    description: string | null;
+    name: string;
+    role: string;
+    url: string | null;
+  }>;
+  name: string;
+  systemPrompt: string;
+}) {
+  return [
+    agent.name,
+    agent.description,
+    agent.systemPrompt,
+    ...agent.files.map((file) =>
+      [file.name, file.description, file.role, file.url].filter(Boolean).join(" "),
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+}
+
+function missingRequiredConnectors(input: {
+  agent: {
+    description: string | null;
+    files: Array<{
+      description: string | null;
+      name: string;
+      role: string;
+      url: string | null;
+    }>;
+    name: string;
+    systemPrompt: string;
+  };
+  connectorContext: ConnectorContext;
+  tools: string[];
+}) {
+  const missing = new Set(input.connectorContext.missingTools);
+  const text = agentRequirementText(input.agent);
+  const required: string[] = [];
+  const hasGoogleTool =
+    input.tools.includes("google-drive") ||
+    input.tools.some((tool) => tool.startsWith("google."));
+
+  if (
+    missing.has("google-drive") &&
+    hasGoogleTool &&
+    /docs\.google\.com|google drive|google sheet|spreadsheet|sheet|budget tracker|google doc|slides|presentation/.test(
+      text,
+    )
+  ) {
+    required.push("google-drive");
+  }
+
+  if (
+    missing.has("notion") &&
+    input.tools.includes("notion.createPage") &&
+    /notion|summon memory|memory page|output_destination/.test(text)
+  ) {
+    required.push("notion");
+  }
+
+  if (
+    missing.has("google-ads") &&
+    input.tools.includes("google-ads") &&
+    /google ads|adwords|campaign performance|live account/.test(text)
+  ) {
+    required.push("google-ads");
+  }
+
+  if (
+    missing.has("ga4") &&
+    input.tools.includes("ga4") &&
+    /ga4|google analytics|analytics|sessions|traffic|conversion/.test(text)
+  ) {
+    required.push("ga4");
+  }
+
+  return required;
+}
+
+function missingConnectorRunText(input: {
+  connectorContext: ConnectorContext;
+  missingRequired: string[];
+}) {
+  const missingNames = input.missingRequired.map(connectorName);
+  const blockers = input.connectorContext.blockers.length
+    ? input.connectorContext.blockers
+    : missingNames.map((name) => `${name} is not connected for this workspace.`);
+
+  return [
+    "Run blocked before model/tool execution.",
+    "",
+    `Missing required connectors: ${missingNames.join(", ")}.`,
+    "",
+    "What to do:",
+    ...blockers.map((blocker) => `- ${blocker}`),
+    "",
+    "No model calls, external writes, sends, budget edits, or campaign changes were made.",
+  ].join("\n");
 }
 
 function buildReadOnlyRunPrompt({
@@ -539,6 +645,74 @@ export async function executeAgentRun(job: ManualAgentRunJob) {
       CONNECTOR_CONTEXT_TIMEOUT_MS,
     ).catch((error) => connectorTimeoutContext(tools, error));
     const provider = llmProviderSchema.catch("openai").parse(run.agent.llmProvider);
+    const missingRequired = missingRequiredConnectors({
+      agent: run.agent,
+      connectorContext,
+      tools,
+    });
+
+    if (missingRequired.length > 0) {
+      const missingNames = missingRequired.map(connectorName);
+      const text = missingConnectorRunText({
+        connectorContext,
+        missingRequired,
+      });
+      const output: Prisma.InputJsonObject = {
+        mode: "blocked_connectors",
+        provider,
+        model: run.agent.llmModel,
+        usage: null,
+        cost: {
+          status: "not_run",
+          provider,
+          model: run.agent.llmModel,
+          estimatedCostUsd: 0,
+          reason: "Required connectors were missing before model/tool execution.",
+        },
+        text,
+        requestedTools: tools,
+        agentFiles: run.agent.files.map((file) => ({
+          id: file.id,
+          name: file.name,
+          role: file.role,
+          sourceType: file.sourceType,
+          url: file.url,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+        })) as unknown as Prisma.InputJsonValue,
+        connectedTools: connectorContext.connectedTools,
+        missingTools: connectorContext.missingTools,
+        connectorResults:
+          connectorContext.results as unknown as Prisma.InputJsonValue,
+        blockers: connectorContext.blockers,
+        workflowStatus: "blocked",
+        completionState: "failed",
+        criticalWorkflowOutcomes:
+          missingNames.map((name) => `Connect ${name}.`) as unknown as Prisma.InputJsonValue,
+        unresolvedWorkflowOutcomes:
+          missingNames.map((name) => `Connect ${name}.`) as unknown as Prisma.InputJsonValue,
+        toolResults: [],
+        createdGoogleFiles: [],
+        toolCalls: [],
+        artifacts: [],
+        approvalRequestId: null,
+        note:
+          "Run stopped before model/tool execution because required connectors were not connected.",
+      };
+
+      return db.agentRun.update({
+        where: { id: run.id },
+        data: {
+          status: "FAILED",
+          summary: `Run blocked before model/tool execution: connect ${missingNames.join(", ")}.`,
+          error: `Missing required connectors: ${missingNames.join(", ")}.`,
+          output,
+          costEstimate: new Prisma.Decimal(0),
+          durationMs: Date.now() - startedAt,
+          completedAt: new Date(),
+        },
+      });
+    }
     const systemPrompt = [
       SUMMON_MEMORY_SYSTEM_INSTRUCTION,
       genericToolInstruction(),

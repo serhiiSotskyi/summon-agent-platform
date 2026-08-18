@@ -43,6 +43,7 @@ const TOOL_LLM_TIMEOUT_MS = 45_000;
 const FINAL_LLM_TIMEOUT_MS = 45_000;
 const SHEET_PROMPT_SAMPLE_ROWS = 24;
 const SHEET_PROMPT_SAMPLE_COLUMNS = 24;
+const MIN_SPREADSHEET_ANALYSIS_ROWS = 1000;
 const COMPUTED_OUTPUT_PREVIEW_CHARS = 6000;
 
 type ToolLoopAgent = Pick<
@@ -106,6 +107,7 @@ type RuntimeState = {
 };
 
 type WorkflowRequirementState = {
+  requiresPythonAnalysis: boolean;
   requiresSlidesDeckWrite: boolean;
   requiresGoogleDocWrite: boolean;
   requiresNotionPublish: boolean;
@@ -192,6 +194,7 @@ function stageRuntimeDataFile(input: {
   fileName: string;
   content: string;
   mimeType: string;
+  usage?: string;
 }) {
   const fileName = safeRuntimeFileName(input.fileName);
   input.state.runtimeFiles.push({
@@ -209,7 +212,8 @@ function stageRuntimeDataFile(input: {
     sizeBytes: Buffer.byteLength(input.content, "utf8"),
     pythonPath: `.runtime/${fileName}`,
     usage:
-      "Use python.run and read this file from the sandbox working directory instead of copying sheet rows into generated code.",
+      input.usage ??
+      "Use python.run and read this file from the sandbox working directory instead of copying large data into generated code.",
   };
 }
 
@@ -509,6 +513,269 @@ function compactSheetRow(row: unknown[]) {
     .map((cell) => compactSheetCell(cell));
 }
 
+function sheetCellText(row: unknown[], index: number) {
+  return compactText(
+    row[index] === null || row[index] === undefined ? "" : String(row[index]),
+    400,
+  ) as string;
+}
+
+function sheetColumnLetter(index: number) {
+  let value = index + 1;
+  let letter = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    letter = String.fromCharCode(65 + remainder) + letter;
+    value = Math.floor((value - 1) / 26);
+  }
+
+  return letter;
+}
+
+function parseSheetMoney(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text || /^[-–—]$/.test(text)) {
+    return null;
+  }
+
+  const numeric = text.replace(/[^0-9.]/g, "");
+  if (!numeric) {
+    return null;
+  }
+
+  const amount = Number(numeric);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+
+  return /-/.test(text) || /^\(.*\)$/.test(text) ? -amount : amount;
+}
+
+function parseSheetPercent(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text || /^[-–—]$/.test(text) || /N\/A/i.test(text)) {
+    return null;
+  }
+
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+
+  const percent = Number(match[0]);
+  return Number.isFinite(percent) ? percent : null;
+}
+
+function parseSheetDate(value: unknown) {
+  const match = String(value ?? "")
+    .trim()
+    .match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) {
+    return null;
+  }
+
+  const [, day, month, year] = match;
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function sheetProfileToday(rows: unknown[][]) {
+  for (const row of rows) {
+    const todayIndex = row.findIndex((cell) => /^today$/i.test(String(cell ?? "").trim()));
+    if (todayIndex >= 0) {
+      const parsed = parseSheetDate(row[todayIndex + 1]);
+      if (parsed) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
+function inDateWindow(today: Date | null, liveDate: Date | null, endDate: Date | null) {
+  if (!today || !liveDate || !endDate) {
+    return true;
+  }
+
+  return liveDate <= today && today <= endDate;
+}
+
+function isLikelyPpcBudgetSheet(rows: unknown[][]) {
+  const joined = rows
+    .slice(0, 80)
+    .map((row) => row.map((cell) => String(cell ?? "")).join(" "))
+    .join("\n");
+
+  return (
+    /Campaign Name/i.test(joined) &&
+    /Yesterday'?s Spend|Daily spend until EOM|Difference Per day|Live Date|End Date/i.test(
+      joined,
+    )
+  );
+}
+
+function ppcBudgetRecommendedColumns() {
+  const labels = {
+    businessUnit: 1,
+    account: 2,
+    campaignName: 3,
+    targetedGeo: 4,
+    monthlyBudget: 5,
+    mtdSpend: 6,
+    spendPercent: 9,
+    periodPercent: 10,
+    differencePercent: 11,
+    targetCpa: 12,
+    dailySpendUntilEom: 14,
+    dailySpendSoFar: 15,
+    yesterdaySpend: 16,
+    differencePerDay: 20,
+    liveDate: 22,
+    endDate: 23,
+    remainingBudget: 24,
+    currentBudgetGap: 25,
+    segment: 26,
+    extraBudgetSignal: 27,
+  };
+
+  return Object.fromEntries(
+    Object.entries(labels).map(([key, index]) => [
+      key,
+      {
+        index,
+        letter: sheetColumnLetter(index),
+        oneBased: index + 1,
+      },
+    ]),
+  );
+}
+
+function profilePpcBudgetSheet(rows: unknown[][]) {
+  if (!isLikelyPpcBudgetSheet(rows)) {
+    return null;
+  }
+
+  const today = sheetProfileToday(rows);
+  const candidates: Array<Record<string, unknown>> = [];
+  let candidateCampaignRows = 0;
+  let activeNonBrandRows = 0;
+
+  rows.forEach((row, index) => {
+    const campaignName = sheetCellText(row, 3).trim();
+    if (
+      !campaignName ||
+      /^Campaign Name$/i.test(campaignName) ||
+      /Allocated Amount/i.test(campaignName) ||
+      /Brand/i.test(campaignName)
+    ) {
+      return;
+    }
+
+    const monthlyBudget = parseSheetMoney(row[5]) ?? 0;
+    const mtdSpend = parseSheetMoney(row[6]) ?? 0;
+    const dailySpendUntilEom = parseSheetMoney(row[14]) ?? 0;
+    const yesterdaySpend = parseSheetMoney(row[16]) ?? 0;
+    const differencePerDay = parseSheetMoney(row[20]) ?? 0;
+    const liveDate = parseSheetDate(row[22]);
+    const endDate = parseSheetDate(row[23]);
+    const hasBudgetSignal =
+      Math.abs(monthlyBudget) +
+        Math.abs(mtdSpend) +
+        Math.abs(dailySpendUntilEom) +
+        Math.abs(yesterdaySpend) +
+        Math.abs(differencePerDay) >
+      0;
+
+    if (!hasBudgetSignal) {
+      return;
+    }
+
+    candidateCampaignRows += 1;
+
+    if (!inDateWindow(today, liveDate, endDate)) {
+      return;
+    }
+
+    activeNonBrandRows += 1;
+
+    const explicitDifferencePercent = parseSheetPercent(row[11]);
+    const computedDailyGapPercent =
+      explicitDifferencePercent === null && dailySpendUntilEom !== 0
+        ? ((yesterdaySpend - dailySpendUntilEom) / Math.abs(dailySpendUntilEom)) * 100
+        : explicitDifferencePercent;
+    const offPaceReason =
+      explicitDifferencePercent !== null && Math.abs(explicitDifferencePercent) > 5
+        ? "difference_percent"
+        : computedDailyGapPercent !== null && Math.abs(computedDailyGapPercent) > 5
+          ? "computed_daily_gap"
+          : dailySpendUntilEom < 0
+            ? "negative_daily_required"
+            : Math.abs(differencePerDay) > 5
+              ? "difference_per_day"
+              : "";
+
+    if (!offPaceReason) {
+      return;
+    }
+
+    candidates.push({
+      rowNumber: index + 1,
+      account: sheetCellText(row, 2),
+      platform: sheetCellText(row, 1),
+      campaignName,
+      monthlyBudget,
+      mtdSpend,
+      dailySpendUntilEom,
+      yesterdaySpend,
+      differencePercent:
+        computedDailyGapPercent === null
+          ? null
+          : Math.round(computedDailyGapPercent * 10) / 10,
+      differencePerDay,
+      liveDate: sheetCellText(row, 22),
+      endDate: sheetCellText(row, 23),
+      reason: offPaceReason,
+    });
+  });
+
+  return {
+    kind: "ppc_budget_tracker",
+    generatedBy: "summon_sheet_profile_v1",
+    rowCount: rows.length,
+    today: today ? today.toISOString().slice(0, 10) : null,
+    recommendedColumns: ppcBudgetRecommendedColumns(),
+    parsingGuidance:
+      "Use recommendedColumns with zero-based indexes. Do not rely only on the first partial Campaign Name header row; this tracker has repeated header blocks and some formula-error account cells.",
+    candidateCampaignRows,
+    activeNonBrandRows,
+    offPaceCandidateCount: candidates.length,
+    offPaceCandidates: candidates.slice(0, 25),
+  };
+}
+
+function compactSheetProfileForPrompt(value: unknown) {
+  const profile = asRecord(value);
+  if (asString(profile.kind) !== "ppc_budget_tracker") {
+    return value;
+  }
+
+  return {
+    kind: profile.kind,
+    generatedBy: profile.generatedBy,
+    rowCount: profile.rowCount,
+    today: profile.today,
+    recommendedColumns: profile.recommendedColumns,
+    parsingGuidance: profile.parsingGuidance,
+    candidateCampaignRows: profile.candidateCampaignRows,
+    activeNonBrandRows: profile.activeNonBrandRows,
+    offPaceCandidateCount: profile.offPaceCandidateCount,
+    offPaceCandidates: asObjectArray(profile.offPaceCandidates).slice(0, 10),
+    promptPreview:
+      "Only the first 10 profile candidates are shown here. Load dataFile in python.run for the full sheet/profile.",
+  };
+}
+
 function compactToolResultForPrompt(value: unknown, focus?: ToolResultFocus) {
   const record = asRecord(value);
   const toolName = asString(record.toolName);
@@ -596,6 +863,7 @@ function compactToolResultForPrompt(value: unknown, focus?: ToolResultFocus) {
           result.returnedColumnCount,
           sheetColumnCount(rows),
         ),
+        profile: compactSheetProfileForPrompt(result.profile),
         dataFile: result.dataFile,
         headers: sampleRows[0] ? compactSheetRow(sampleRows[0]) : [],
         sampleRows: sampleRows.slice(1).map((row) => compactSheetRow(row)),
@@ -844,8 +1112,17 @@ function inferWorkflowRequirements(input: {
     /\b(google doc|google docs|doc|document|memo|brief|write-up|writeup|report)\b/.test(
       prompt,
     );
+  const hasPythonTool = input.availableTools.includes("python.run");
+  const hasSpreadsheetContext =
+    input.availableTools.includes("google.sheets.readRange") ||
+    /\b(google sheet|spreadsheet|sheet|csv|budget tracker|tracker)\b/.test(prompt);
+  const asksForAnalysis =
+    /\b(analy[sz]e|analysis|calculate|compute|recommend|recommendation|pacing|budget|spend|tcpa|flag|compare|parse|group|table|reporting)\b/.test(
+      prompt,
+    );
 
   return {
+    requiresPythonAnalysis: hasPythonTool && hasSpreadsheetContext && asksForAnalysis,
     requiresSlidesDeckWrite: hasSlidesTools && mentionsSlidesOutput && asksToCreateOrPopulate,
     requiresGoogleDocWrite:
       hasGoogleDocsTools && mentionsGoogleDocOutput && asksToCreateOrPopulate,
@@ -855,6 +1132,249 @@ function inferWorkflowRequirements(input: {
 
 function hasSuccessfulTool(results: unknown[], toolName: GenericAgentToolKey) {
   return successfulToolResults(results).some((result) => result.toolName === toolName);
+}
+
+function pythonAnalysisHasDiagnostics(result: ToolCallOutputRecord) {
+  if (result.toolName !== "python.run" || result.status !== "succeeded") {
+    return false;
+  }
+
+  const stdout = asString(asRecord(result.result).stdout).trim();
+  if (!stdout) {
+    return false;
+  }
+
+  if (
+    /row[_ -]?count|rows[_ -]?(processed|analysed|analyzed)|campaign[_ -]?count|campaigns[_ -]?(processed|analysed|analyzed)|active[_ -]?campaign/i.test(
+      stdout,
+    )
+  ) {
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(stdout) as unknown;
+    const record = asRecord(parsed);
+    return Object.entries(record).some(([key, value]) => {
+      return (
+        /row|campaign|record|processed|analysed|analyzed|active/i.test(key) &&
+        typeof value === "number" &&
+        Number.isFinite(value)
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+function latestSuccessfulToolRecord(input: {
+  results: unknown[];
+  toolName: GenericAgentToolKey;
+  afterIndex?: number;
+}) {
+  let latest:
+    | {
+        index: number;
+        result: ToolCallOutputRecord;
+      }
+    | undefined;
+
+  input.results.forEach((result, index) => {
+    if (
+      index > (input.afterIndex ?? -1) &&
+      isToolCallOutputRecord(result) &&
+      result.status === "succeeded" &&
+      result.toolName === input.toolName
+    ) {
+      latest = { index, result };
+    }
+  });
+
+  return latest;
+}
+
+function latestPpcBudgetProfile(results: unknown[]) {
+  let profile: Record<string, unknown> | undefined;
+
+  for (const result of successfulToolResults(results)) {
+    if (result.toolName !== "google.sheets.readRange") {
+      continue;
+    }
+
+    const candidate = asRecord(asRecord(result.result).profile);
+    if (asString(candidate.kind) === "ppc_budget_tracker") {
+      profile = candidate;
+    }
+  }
+
+  return profile;
+}
+
+function diagnosticNumberFromStdout(input: {
+  parsed: Record<string, unknown>;
+  stdout: string;
+  keys: string[];
+}) {
+  for (const key of input.keys) {
+    const value = input.parsed[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  for (const key of input.keys) {
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = input.stdout.match(new RegExp(`${escapedKey}\\s*[:=]\\s*(-?\\d+(?:\\.\\d+)?)`, "i"));
+    if (match?.[1]) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
+}
+
+function pythonAnalysisStatus(results: unknown[]) {
+  const latestSheet = latestSuccessfulToolRecord({
+    results,
+    toolName: "google.sheets.readRange",
+  });
+  const latestPython = latestSuccessfulToolRecord({
+    results,
+    toolName: "python.run",
+    afterIndex: latestSheet?.index,
+  });
+
+  if (!latestPython) {
+    return {
+      complete: false,
+      reason:
+        latestSheet !== undefined
+          ? "Run Python analysis after the latest spreadsheet read."
+          : "Run Python analysis successfully.",
+    };
+  }
+
+  if (!pythonAnalysisHasDiagnostics(latestPython.result)) {
+    return {
+      complete: false,
+      reason:
+        "Python stdout must include parsed row/campaign counts plus findings.",
+    };
+  }
+
+  const stdout = asString(asRecord(latestPython.result.result).stdout);
+  const parsed = parseJsonObjectFromText(stdout);
+  const profile = latestPpcBudgetProfile(results);
+  const offPaceCandidateCount = asNumber(profile?.offPaceCandidateCount, 0);
+
+  if (offPaceCandidateCount > 0) {
+    if (Object.keys(parsed).length === 0) {
+      return {
+        complete: false,
+        reason:
+          "For profiled PPC budget tracker analysis, Python stdout must be one compact valid JSON object, not prose or a Python repr list.",
+      };
+    }
+
+    const flaggedCount =
+      diagnosticNumberFromStdout({
+        parsed,
+        stdout,
+        keys: [
+          "flagged_campaign_count",
+          "off_pace_flagged_count",
+          "total_flags",
+          "flagged_count",
+        ],
+      }) ?? asObjectArray(parsed.flagged_campaigns).length;
+    const excludedCandidateCount =
+      diagnosticNumberFromStdout({
+        parsed,
+        stdout,
+        keys: ["excluded_candidate_count", "excluded_off_pace_candidate_count"],
+      }) ?? 0;
+    const acknowledgedCandidateCount =
+      diagnosticNumberFromStdout({
+        parsed,
+        stdout,
+        keys: [
+          "off_pace_candidate_count",
+          "profile_off_pace_candidate_count",
+          "sheet_off_pace_candidate_count",
+        ],
+      }) ?? 0;
+    const structuredFlagCount = Math.max(
+      asObjectArray(parsed.top_flags).length,
+      asObjectArray(parsed.flags).length,
+      asObjectArray(parsed.flagged_campaigns).length,
+    );
+
+    if (
+      flaggedCount === 0 &&
+      excludedCandidateCount === 0 &&
+      acknowledgedCandidateCount === 0
+    ) {
+      const examples = asObjectArray(profile?.offPaceCandidates)
+        .slice(0, 5)
+        .map((candidate) => {
+          const rowNumber = asNumber(candidate.rowNumber);
+          const campaignName = asString(candidate.campaignName, "unknown campaign");
+          const differencePercent = candidate.differencePercent;
+          return `row ${rowNumber}: ${campaignName}${
+            typeof differencePercent === "number" ? ` (${differencePercent}%)` : ""
+          }`;
+        })
+        .join("; ");
+
+      return {
+        complete: false,
+        reason: `Python reported zero flagged campaigns, but the sheet profile found ${offPaceCandidateCount} off-pace candidates${
+          examples ? `, for example ${examples}` : ""
+        }. Re-run using sheet.profile.recommendedColumns and print off_pace_candidate_count plus flagged or excluded candidates.`,
+      };
+    }
+
+    if (acknowledgedCandidateCount === 0) {
+      return {
+        complete: false,
+        reason:
+          "Python JSON must include off_pace_candidate_count from sheet['profile'] so the run proves it cross-checked the platform sheet profile.",
+      };
+    }
+
+    if (acknowledgedCandidateCount !== offPaceCandidateCount) {
+      return {
+        complete: false,
+        reason: `Python JSON reported off_pace_candidate_count=${acknowledgedCandidateCount}, but sheet['profile'].offPaceCandidateCount is ${offPaceCandidateCount}. Copy the profile count exactly, then use flagged_campaign_count plus excluded_candidate_count to account for it.`,
+      };
+    }
+
+    if (flaggedCount + excludedCandidateCount < offPaceCandidateCount) {
+      return {
+        complete: false,
+        reason: `Python JSON accounted for only ${
+          flaggedCount + excludedCandidateCount
+        } of ${offPaceCandidateCount} profile off-pace candidates. Set flagged_campaign_count to the total actionable flags, excluded_candidate_count to the excluded profile candidates, and include only the top 25 rows in top_flags.`,
+      };
+    }
+
+    if (flaggedCount > 0 && structuredFlagCount === 0) {
+      return {
+        complete: false,
+        reason:
+          "Python JSON reported flagged campaigns but did not include structured top_flags, flags, or flagged_campaigns objects. Print a compact top_flags array with rowNumber, campaignName, metric values, reason, and recommendation.",
+      };
+    }
+  }
+
+  return { complete: true, reason: "" };
+}
+
+function hasCompletedPythonAnalysis(results: unknown[]) {
+  return pythonAnalysisStatus(results).complete;
 }
 
 function latestSuccessfulToolIndex(
@@ -876,10 +1396,17 @@ function latestSuccessfulToolIndex(
 }
 
 function latestSubstantiveToolIndex(results: unknown[]) {
-  return latestSuccessfulToolIndex(
-    results,
-    (result) => result.toolName !== "notion.createPage",
-  );
+  let latest = -1;
+  results.forEach((result, index) => {
+    if (
+      isToolCallOutputRecord(result) &&
+      result.toolName !== "notion.createPage"
+    ) {
+      latest = index;
+    }
+  });
+
+  return latest;
 }
 
 function hasFreshNotionPublish(results: unknown[]) {
@@ -1035,6 +1562,23 @@ function missingWorkflowOutcomes(input: {
   availableTools: GenericAgentToolKey[];
 }) {
   const missing: string[] = [];
+  const needsSpreadsheetRead =
+    input.requirements.requiresPythonAnalysis &&
+    input.availableTools.includes("google.sheets.readRange") &&
+    !hasSuccessfulTool(input.toolResults, "google.sheets.readRange");
+  const pythonStatus = input.requirements.requiresPythonAnalysis
+    ? pythonAnalysisStatus(input.toolResults)
+    : { complete: true, reason: "" };
+
+  if (needsSpreadsheetRead) {
+    missing.push(
+      "Read the source spreadsheet with google.sheets.readRange before running python.run. Use the returned dataFile path in Python; do not invent local filenames.",
+    );
+  } else if (!pythonStatus.complete) {
+    missing.push(
+      `Run Python analysis successfully before publishing final recommendations. ${pythonStatus.reason} Fix any Python error or empty/contradicted parse and rerun python.run before finalizing.`,
+    );
+  }
 
   if (input.requirements.requiresSlidesDeckWrite) {
     if (!hasSuccessfulTool(input.toolResults, "google.slides.copyTemplate")) {
@@ -4189,8 +4733,13 @@ function computedOutputSections(results: unknown[]) {
   const flags =
     asObjectArray(parsed.top_flags).length > 0
       ? asObjectArray(parsed.top_flags)
-      : asObjectArray(parsed.flags);
-  const totalFlags = asNumber(parsed.total_flags, flags.length);
+      : asObjectArray(parsed.flags).length > 0
+        ? asObjectArray(parsed.flags)
+        : asObjectArray(parsed.flagged_campaigns);
+  const totalFlags = asNumber(
+    parsed.total_flags,
+    asNumber(parsed.flagged_campaign_count, flags.length),
+  );
   const overspending = asNumber(parsed.overspending, 0);
   const underspending = asNumber(parsed.underspending, 0);
 
@@ -4283,6 +4832,7 @@ function deterministicWorkflowCalls(input: {
   requirements: WorkflowRequirementState;
   toolResults: unknown[];
   availableTools: GenericAgentToolKey[];
+  allowNotionPublish?: boolean;
 }) {
   const calls: PlannedToolCall[] = [];
   const presentationId = copiedPresentationId(input.toolResults);
@@ -4460,7 +5010,10 @@ function deterministicWorkflowCalls(input: {
   }
 
   if (
+    input.allowNotionPublish !== false &&
     input.requirements.requiresNotionPublish &&
+    (!input.requirements.requiresPythonAnalysis ||
+      hasCompletedPythonAnalysis(input.toolResults)) &&
     input.availableTools.includes("notion.createPage") &&
     latestSubstantiveToolIndex(input.toolResults) >= 0 &&
     !hasFreshNotionPublish(input.toolResults)
@@ -4760,6 +5313,8 @@ function schemaForTool(tool: GenericAgentToolKey) {
       return {
         spreadsheetUrl: "Google Sheets URL, optional alternative to spreadsheetId",
         spreadsheetId: "Google Sheets id",
+        sheetGid:
+          "optional Google Sheets tab gid; automatically parsed from spreadsheetUrl when present",
         range:
           "Bounded A1 range, e.g. Sheet1!A1:D100. Avoid whole-column ranges like A:ZZ unless a preview is enough.",
       };
@@ -4828,6 +5383,8 @@ function schemaForTool(tool: GenericAgentToolKey) {
     case "notion.createPage":
       return {
         title: "page title",
+        parentPageId:
+          "optional Notion parent page id; omit to use the attached Notion output destination or workspace default",
         content:
           "final plain text/markdown-like output with computed findings, prioritized recommendations, evidence, caveats, and approval-required actions",
         links: "optional [{title,url}] artifact links",
@@ -4869,7 +5426,9 @@ function buildPlannerPrompt(input: {
     "For Google Docs template work, first copy or create the document, then replace placeholders or batch update only the copied/run-owned Doc.",
     "When creating a new Google Doc report/brief, pass the complete markdown body in google.docs.createDocument.content so the platform can insert and verify formatted content immediately. Do not create an empty Doc and stop.",
     "For spreadsheet/table outputs, use google.sheets.createSpreadsheet to create a run-owned native Google Sheet, seed rows when available, then use google.sheets.updateRange/readRange for follow-up edits and verification.",
-    "When google.sheets.readRange returns dataFile, use python.run to load that JSON file for calculations. Do not copy large sheet row arrays into generated Python code or future tool inputs.",
+    "For spreadsheet analysis, request a complete bounded range such as A1:AB1000 instead of a tiny preview range. The platform will keep the prompt preview compact while making the full requested rows available to Python.",
+    "When google.sheets.readRange returns dataFile, use python.run to load that JSON object for calculations: sheet = json.load(open(path)); rows = sheet['data']. Do not treat the dataFile as a raw row list, and do not copy large sheet row arrays into generated Python code or future tool inputs.",
+    "If a spreadsheet dataFile includes sheet['profile'], use profile.recommendedColumns and profile.offPaceCandidates as validation hints. For PPC budget trackers, do not rely only on the first partial Campaign Name header row; repeated header blocks and formula-error account cells are expected.",
     "For Google Slides template work, use google.slides.inspectTemplate on the copied deck before editing so you can target slide IDs, element IDs, table cells, images/charts, and placeholder candidates.",
     "Prefer google.slides.updateText and google.slides.updateTableCell for precise slide-scoped edits. Use google.slides.batchUpdate for duplicated slides, new shapes, layout changes, and chart/image placeholder areas.",
     "When Python creates chart/image files such as PNG, JPG, WebP, GIF, or SVG, upload them with google.drive.uploadArtifact. Then insert them into copied Slides with google.slides.batchUpdate createImage using the upload result downloadUrl, or reference the generated file as artifact://relative/path.png inside the batchUpdate request.",
@@ -4883,6 +5442,8 @@ function buildPlannerPrompt(input: {
     "If the run prompt requires a generated deck, report, file, or memory page, keep calling tools until those artifacts are actually created or updated. Do not finalize from a copied/read-only artifact.",
     "If Required workflow outcomes below is non-empty, you must call tools to complete at least one missing outcome. Only return {\"toolCalls\":[]} when the missing outcomes are resolved or a tool failure makes them impossible.",
     "For Python work, use uploaded helper files or provide short generated Python in python.run.code.",
+    "For spreadsheet analysis, Python stdout must be one compact JSON object with diagnostic counts such as row_count, rows_processed, campaign_count, active_campaign_count, and flagged_campaigns. Do not print giant raw lists or finalize from stdout that only contains an empty result list.",
+    "For profiled PPC budget tracker analysis, Python stdout must also include off_pace_candidate_count copied exactly from sheet['profile']['offPaceCandidateCount']. Account for that total with flagged_campaign_count plus excluded_candidate_count, and use top_flags with at most 25 objects for the most actionable findings.",
     "When referencing a prior tool result, copy the concrete ID or URL from Prior tool results. Do not emit template placeholders like {{toolCalls[0].output.fileId}}.",
     "If no tool is needed, return {\"toolCalls\":[]}.",
     "",
@@ -4968,6 +5529,81 @@ function parseGoogleFileId(value: string) {
   }
 
   return value;
+}
+
+function parseGoogleSheetGid(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const url = new URL(value);
+    return url.searchParams.get("gid") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function widenSheetRangeForAnalysis(range: string) {
+  const match = range.match(
+    /^(?:([^!]+)!)?([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/i,
+  );
+  if (!match) {
+    return range;
+  }
+
+  const [, sheetName, startColumn, startRow, endColumnCandidate, endRowCandidate] = match;
+  const currentEnd = Number(endRowCandidate ?? startRow);
+  if (!Number.isFinite(currentEnd) || currentEnd >= MIN_SPREADSHEET_ANALYSIS_ROWS) {
+    return range;
+  }
+
+  const sheet = sheetName ? `${sheetName}!` : "";
+  const endColumn = endColumnCandidate ?? startColumn;
+  return `${sheet}${startColumn}${startRow}:${endColumn}${MIN_SPREADSHEET_ANALYSIS_ROWS}`;
+}
+
+function normalizeNotionPageId(value: string) {
+  const compact = value.replace(/-/g, "");
+  if (!/^[0-9a-f]{32}$/i.test(compact)) {
+    return value;
+  }
+
+  return [
+    compact.slice(0, 8),
+    compact.slice(8, 12),
+    compact.slice(12, 16),
+    compact.slice(16, 20),
+    compact.slice(20),
+  ].join("-");
+}
+
+function parseNotionPageId(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  const directId = value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  if (directId?.[0]) {
+    return normalizeNotionPageId(directId[0]);
+  }
+
+  const compactId = value.match(/[0-9a-f]{32}/i);
+  if (compactId?.[0]) {
+    return normalizeNotionPageId(compactId[0]);
+  }
+
+  return "";
+}
+
+function attachedNotionParentPageId(agent: ToolLoopAgent) {
+  const outputDestination =
+    agent.files.find(
+      (file) => file.role === "output_destination" && /notion\.so/i.test(file.url ?? ""),
+    ) ??
+    agent.files.find((file) => /notion\.so/i.test(file.url ?? ""));
+
+  return parseNotionPageId(outputDestination?.url ?? "");
 }
 
 function firstAttachedGoogleFile(agent: ToolLoopAgent, options: {
@@ -5249,6 +5885,7 @@ async function executeOneTool(input: {
   agent: ToolLoopAgent;
   call: PlannedToolCall;
   availableTools: GenericAgentToolKey[];
+  priorToolResults: unknown[];
   state: RuntimeState;
 }) {
   const db = getDb();
@@ -5308,6 +5945,22 @@ async function executeOneTool(input: {
     const result = await withLocalTimeout(
       (async () => {
         let result: unknown;
+
+        if (toolName === "notion.createPage") {
+          const requirements = inferWorkflowRequirements({
+            agent: input.agent,
+            basePrompt: "",
+            availableTools: input.availableTools,
+          });
+          if (
+            requirements.requiresPythonAnalysis &&
+            !hasCompletedPythonAnalysis(input.priorToolResults)
+          ) {
+            throw new Error(
+              `notion.createPage is blocked until the latest Python analysis passes validation. ${pythonAnalysisStatus(input.priorToolResults).reason}`,
+            );
+          }
+        }
 
         if (toolName === "python.run") {
           const sandbox = await runPythonInSandbox({
@@ -5573,26 +6226,54 @@ async function executeOneTool(input: {
     }
 
     if (toolName === "google.sheets.readRange") {
+      const spreadsheetLocator =
+        asString(request.spreadsheetId) || asString(request.spreadsheetUrl);
       const spreadsheetId = parseGoogleFileId(
-        asString(request.spreadsheetId) || asString(request.spreadsheetUrl),
+        spreadsheetLocator,
       );
-      const range = asString(request.range, "A1:Z100");
+      const sheetGid =
+        asString(request.sheetGid) || parseGoogleSheetGid(asString(request.spreadsheetUrl));
+      const requestedRange = asString(request.range, "A1:Z100");
+      const range = inferWorkflowRequirements({
+        agent: input.agent,
+        basePrompt: "",
+        availableTools: input.availableTools,
+      }).requiresPythonAnalysis
+        ? widenSheetRangeForAnalysis(requestedRange)
+        : requestedRange;
       if (!spreadsheetId) {
         throw new Error("google.sheets.readRange requires spreadsheetId or spreadsheetUrl.");
       }
       const sheetResult = await readGoogleSheetRange({
         workspaceId: input.workspaceId,
         spreadsheetId,
+        sheetGid,
         range,
       });
+      const sheetRecord = asRecord(sheetResult);
+      const fullValues = sheetValues(sheetRecord.fullValues);
+      const runtimeRows = fullValues.length > 0 ? fullValues : sheetValues(sheetRecord.values);
+      const profile = profilePpcBudgetSheet(runtimeRows);
+      const runtimeSheetRecord = Object.fromEntries(
+        Object.entries(sheetRecord).filter(([key]) => key !== "fullValues"),
+      );
+      const runtimeSheetData = {
+        ...runtimeSheetRecord,
+        data: runtimeRows,
+        profile,
+      };
       const dataFile = stageRuntimeDataFile({
         state: input.state,
         fileName: `google_sheets_${toolCall.id}.json`,
         mimeType: "application/json",
-        content: JSON.stringify(sheetResult, null, 2),
+        content: JSON.stringify(runtimeSheetData, null, 2),
+        usage:
+          "Use python.run to load this JSON object: sheet = json.load(open(path)); rows = sheet['data']; profile = sheet.get('profile'). For PPC budget trackers, use profile.recommendedColumns and cross-check profile.offPaceCandidates before finalizing.",
       });
+      delete sheetRecord.fullValues;
       result = {
-        ...asRecord(sheetResult),
+        ...sheetRecord,
+        profile,
         dataFile,
       };
     }
@@ -5884,6 +6565,10 @@ async function executeOneTool(input: {
         title,
         content: asString(request.content),
         links,
+        parentPageId:
+          parseNotionPageId(asString(request.parentPageId)) ||
+          attachedNotionParentPageId(input.agent) ||
+          undefined,
       });
       result = notionResult;
       const artifact = artifactOutput(
@@ -5996,6 +6681,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
       requirements: workflowRequirements,
       toolResults,
       availableTools,
+      allowNotionPublish: false,
     });
 
     if (deterministicCalls.length > 0) {
@@ -6007,6 +6693,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
             agent: input.agent,
             call,
             availableTools,
+            priorToolResults: toolResults,
             state,
           }),
         );
@@ -6082,6 +6769,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
           agent: input.agent,
           call,
           availableTools,
+          priorToolResults: toolResults,
           state,
         }),
       );
@@ -6098,6 +6786,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
       requirements: workflowRequirements,
       toolResults,
       availableTools,
+      allowNotionPublish: true,
     });
     if (deterministicCalls.length === 0) {
       break;
@@ -6111,6 +6800,7 @@ export async function runAgentToolLoop(input: ToolLoopInput) {
           agent: input.agent,
           call,
           availableTools,
+          priorToolResults: toolResults,
           state,
         }),
       );
